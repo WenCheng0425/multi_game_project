@@ -3,6 +3,7 @@
 *.exe
 server
 client
+server_multi
 
 # 忽略 VS Code 的個人設定檔 (選用)
 .vscode/
