@@ -1,0 +1,8 @@
+# 忽略編譯出來的執行檔
+*.out
+*.exe
+server
+client
+
+# 忽略 VS Code 的個人設定檔 (選用)
+.vscode/
