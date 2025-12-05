@@ -9,9 +9,7 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "game.h"       // <--- 新增這行！(它已經包含 stdio, stdlib, string, 以及 PORT 設定)
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -20,30 +18,11 @@
 #include <errno.h>
 
 /* Private define ------------------------------------------------------------*/
-#define PORT 8080
+// #define DEFAULT_IP "127.0.0.1"  // Server 其實不需要設 IP (它預設是聽所有來源 INADDR_ANY)，這行沒用到可刪
 #define MAX_CLIENTS 10
-#define BUFFER_SIZE 1024
-#define MAX_NAME 32
-#define MAP_SIZE 3
 
 /* Private typedef -----------------------------------------------------------*/
-typedef struct Item {
-    char name[MAX_NAME];   
-    struct Item *next;     
-} Item;
-
-typedef struct Player {
-    int socket_fd;         
-    char name[MAX_NAME];   
-    int x, y;              
-    Item *backpack;        
-    struct Player *next;   
-} Player;
-
-typedef struct Room {
-    Item *ground_items;    
-} Room;
-
+// 都已經搬到 game.h 了
 /* Private variables ---------------------------------------------------------*/
 Room map[MAP_SIZE][MAP_SIZE]; 
 Player *player_list_head = NULL;
@@ -53,9 +32,9 @@ void add_item(Item **head, const char *name);
 void init_map(void);
 void create_player(int fd);
 Player *find_player_by_fd(int fd);
-int init_server_socket(int port);
+int init_server_socket(int Port);
 void process_command(int sd, Player *current_player, char *buffer);
-void add_item(Item **head, const char *name);
+
 /* USER CODE BEGIN 0 */
 // 輔助函式：新增物品到 Linked List 
 void add_item(Item **head, const char *name) {
@@ -88,15 +67,19 @@ int main() {
 
     /* 3. 啟動伺服器 (Start Server) */
     // 我們把 socket, bind, listen 全部封裝進去了
-    master_socket = init_server_socket(PORT);
+    master_socket = init_server_socket(DEFAULT_PORT);
     
     // 為了 accept 需要重新賦值 address 結構
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
+    address.sin_port = htons(DEFAULT_PORT);
     addrlen = sizeof(address);
 
-    printf("Game Server started on port %d... Waiting for connections...\n", PORT);
+    printf("========================================\n");
+    printf(" 遊戲伺服器已啟動 (Game Server Started) \n");
+    printf(" 監聽 Port: %d\n", DEFAULT_PORT);
+    printf(" 可接受連線來源: 本機 (127.0.0.1) 或 區網 IP\n");
+    printf("========================================\n");
 
     /* 4. 主迴圈 (Infinite Loop) */
     while (1) {
@@ -125,7 +108,7 @@ int main() {
                 perror("accept");
                 exit(EXIT_FAILURE);
             }
-            printf("New connection: socket fd is %d, ip is %s, port is %d\n", 
+           printf("[新連線] Socket fd: %d, IP: %s, Port: %d\n", 
                    new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
             
             // 創建遊戲角色
@@ -151,7 +134,7 @@ int main() {
                 if (valread == 0) {
                     // 斷線處理
                     getpeername(sd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
-                    printf("Host disconnected, fd %d\n", sd);
+                    printf("[斷線] Host disconnected, fd %d, IP %s\n", sd, inet_ntoa(address.sin_addr));
                     close(sd);
                     client_socket[i] = 0;
                     // TODO: 這裡未來可以加入移除 Player 結構的邏輯
@@ -202,7 +185,7 @@ int init_server_socket(int port) {
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
-
+    
     if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind failed");
         exit(EXIT_FAILURE);

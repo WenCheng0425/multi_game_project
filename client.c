@@ -1,12 +1,11 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "game.h"       // <--- 引入我們剛寫好的標頭檔
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
 
-#define PORT 8080
-#define BUFFER_SIZE 1024
+// IP 只有 Client 需要知道，所以留在這裡
+// 【重要】：當你搬到第二台電腦時，這裡要改成第一台電腦(Server)的真實 IP
+#define SERVER_IP "127.0.0.1"
 
 int main() {
     int sock = 0;
@@ -20,10 +19,10 @@ int main() {
     }
 
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
+    serv_addr.sin_port = htons(DEFAULT_PORT);
 
     // 轉換 IP 地址 (連線到本機 127.0.0.1)
-    if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
         printf("\nInvalid address/ Address not supported \n");
         return -1;
     }
