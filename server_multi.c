@@ -219,15 +219,17 @@ int main() {
 
                     printf("Client %d says: %s\n", sd, buffer);
 
-                    // 2. 找出是哪個玩家講話
+                    // 2. 取得當前說話的玩家
                     Player *current_player = find_player_by_fd(sd);
                     if (current_player == NULL) {
-                        printf("Error: Player not found for socket %d\n", sd);
+                        printf("Error: Player not found for socket %d\n", sd); // 預防錯誤處理
                         continue;
                     }
 
-                    // 3. 判斷指令
-                    if (strcmp(buffer, "look") == 0) {
+                    // --- 指令處理開始 ---
+
+                    // 1. 處理 LOOK (保留你原本寫得很棒的物品顯示邏輯)
+                    if (strncmp(buffer, "look", 4) == 0) { // 只要前四個字是 look 就行
                         // 準備要回傳的字串
                         char response[BUFFER_SIZE];
                         memset(response, 0, BUFFER_SIZE); // 清空
@@ -251,10 +253,54 @@ int main() {
                         }
                         // 寄回去給玩家
                         send(sd, response, strlen(response), 0);
-                    } 
+                    }
+                    // 2. 處理 NORTH (新增的移動邏輯)
+                    else if (strncmp(buffer, "north", 5) == 0) {
+                        if (current_player->y > 0) {
+                            current_player->y--;
+                            char *msg = "You moved North.\n";
+                            send(sd, msg, strlen(msg), 0);
+                        } else {
+                            char *msg = "You hit a wall!\n";
+                            send(sd, msg, strlen(msg), 0);
+                        }
+                    }
+                    // 3. 處理 SOUTH (新增的移動邏輯)
+                    else if (strncmp(buffer, "south", 5) == 0) {
+                        if (current_player->y < MAP_SIZE - 1) {
+                            current_player->y++;
+                            char *msg = "You moved South.\n";
+                            send(sd, msg, strlen(msg), 0);
+                        } else {
+                            char *msg = "You hit a wall!\n";
+                            send(sd, msg, strlen(msg), 0);
+                        }
+                    }
+                    // 4. 處理 EAST (新增的移動邏輯)
+                    else if (strncmp(buffer, "east", 4) == 0) {
+                        if (current_player->x < MAP_SIZE - 1) {
+                            current_player->x++;
+                            char *msg = "You moved East.\n";
+                            send(sd, msg, strlen(msg), 0);
+                        } else {
+                            char *msg = "You hit a wall!\n";
+                            send(sd, msg, strlen(msg), 0);
+                        }
+                    }
+                    // 5. 處理 WEST (新增的移動邏輯)
+                    else if (strncmp(buffer, "west", 4) == 0) {
+                        if (current_player->x > 0) {
+                            current_player->x--;
+                            char *msg = "You moved West.\n";
+                            send(sd, msg, strlen(msg), 0);
+                        } else {
+                            char *msg = "You hit a wall!\n";
+                            send(sd, msg, strlen(msg), 0);
+                        }
+                    }
+                    // 6. 未知指令
                     else {
-                        // 如果看不懂指令
-                        char *msg = "Unknown command. Try 'look'.\n";
+                        char *msg = "Unknown command. Try 'look', 'north', 'south', 'east', 'west'.\n";
                         send(sd, msg, strlen(msg), 0);
                     }
                 }
