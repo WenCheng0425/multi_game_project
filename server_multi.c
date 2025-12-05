@@ -298,7 +298,76 @@ int main() {
                             send(sd, msg, strlen(msg), 0);
                         }
                     }
-                    // 6. 未知指令
+                    // 6. 處理 INVENTORY (查看背包)
+                    else if (strncmp(buffer, "inventory", 9) == 0 || strncmp(buffer, "i", 1) == 0) {
+                        char response[BUFFER_SIZE];
+                        memset(response, 0, BUFFER_SIZE);
+                        
+                        sprintf(response, "Your Backpack:\n");
+                        
+                        Item *item = current_player->backpack; // 注意：這裡改用 backpack
+                        if (item == NULL) {
+                            strcat(response, "  (Empty)\n");
+                        } else {
+                            while (item != NULL) {
+                                strcat(response, "  - ");
+                                strcat(response, item->name);
+                                strcat(response, "\n");
+                                item = item->next;
+                            }
+                        }
+                        send(sd, response, strlen(response), 0);
+                    }
+                    // 7. 處理 TAKE (撿起物品)
+                    else if (strncmp(buffer, "take", 4) == 0) {
+                        // 1. 解析指令，找出玩家想撿什麼 (例如: take apple)
+                        char target_name[50];
+                        // 跳過 "take " 這 5 個字元，讀取後面的字
+                        if (sscanf(buffer + 5, "%s", target_name) == 1) {
+                            
+                            Room *curr_room = &map[current_player->x][current_player->y];
+                            Item *curr = curr_room->ground_items;
+                            Item *prev = NULL;
+                            int found = 0;
+
+                            // 2. 在房間地上搜尋這個物品
+                            while (curr != NULL) {
+                                // 這裡用 strcasecmp 可以忽略大小寫 (Apple vs apple 都可以)，如果編譯不過改回 strcmp
+                                if (strcasecmp(curr->name, target_name) == 0) { 
+                                    found = 1;
+                                    break; // 找到了！curr 現在指向該物品
+                                }
+                                prev = curr;
+                                curr = curr->next;
+                            }
+
+                            if (found) {
+                                // 3. 從房間移除該物品 (Linked List 移除節點)
+                                if (prev == NULL) {
+                                    // 如果是第一個物品
+                                    curr_room->ground_items = curr->next;
+                                } else {
+                                    // 如果是中間或後面的物品
+                                    prev->next = curr->next;
+                                }
+
+                                // 4. 放入玩家背包 (Linked List 插入頭部)
+                                curr->next = current_player->backpack; // 注意：這裡改用 backpack
+                                current_player->backpack = curr;       // 注意：這裡改用 backpack
+
+                                char msg[100];
+                                sprintf(msg, "You took the %s.\n", curr->name);
+                                send(sd, msg, strlen(msg), 0);
+                            } else {
+                                char *msg = "You don't see that here.\n";
+                                send(sd, msg, strlen(msg), 0);
+                            }
+                        } else {
+                            char *msg = "Take what?\n";
+                            send(sd, msg, strlen(msg), 0);
+                        }
+                    }
+                    // 8. 未知指令
                     else {
                         char *msg = "Unknown command. Try 'look', 'north', 'south', 'east', 'west'.\n";
                         send(sd, msg, strlen(msg), 0);
