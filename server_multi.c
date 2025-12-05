@@ -222,24 +222,47 @@ int init_server_socket(int port) {
   */
 void process_command(int sd, Player *current_player, char *buffer) {
     char response[BUFFER_SIZE];
+    char temp[100]; // 暫存字串用
     memset(response, 0, BUFFER_SIZE);
 
     // --- Command: LOOK ---
     if (strncmp(buffer, "look", 4) == 0) {
+        // 1. 顯示 Location
+        sprintf(response, "\nLocation: %d %d\n", current_player->x, current_player->y);
+
+        // 2. 顯示 Player(s)
+        strcat(response, "Player(s):");
+        Player *p = player_list_head; // 使用全域變數 player_list_head
+        while (p != NULL) {
+            // 檢查是否在同一個房間
+            if (p->x == current_player->x && p->y == current_player->y) {
+                if (p->socket_fd == sd) {
+                    sprintf(temp, " %s(Me)", p->name); // 自己
+                } else {
+                    sprintf(temp, " %s", p->name);     // 別人
+                }
+                strcat(response, temp);
+            }
+            p = p->next;
+        }
+        strcat(response, "\n");
+
+        // 3. 顯示 Item(s)
+        strcat(response, "Item(s):");
         Room *curr_room = &map[current_player->x][current_player->y];
-        sprintf(response, "You are at (%d, %d).\nYou see:\n", current_player->x, current_player->y);
-        
         Item *item = curr_room->ground_items;
+        
         if (item == NULL) {
-            strcat(response, "  Nothing.\n");
+            strcat(response, " (empty)");
         } else {
             while (item != NULL) {
-                strcat(response, "  - ");
-                strcat(response, item->name);
-                strcat(response, "\n");
+                sprintf(temp, " %s", item->name);
+                strcat(response, temp);
                 item = item->next;
             }
         }
+        strcat(response, "\n");
+        
         send(sd, response, strlen(response), 0);
     }
     // --- Command: MOVE (North, South, East, West) ---
@@ -327,6 +350,43 @@ void process_command(int sd, Player *current_player, char *buffer) {
             send(sd, "Take what?\n", 11, 0);
         }
     }
+    // --- Command: DEPOSIT ---
+    else if (strncmp(buffer, "deposit", 7) == 0) {
+        char target_name[50];
+        if (sscanf(buffer + 8, "%s", target_name) == 1) {
+            Item *curr = current_player->backpack;
+            Item *prev = NULL;
+            int found = 0;
+
+            // 在背包中尋找物品
+            while (curr != NULL) {
+                if (strcasecmp(curr->name, target_name) == 0) {
+                    found = 1;
+                    break;
+                }
+                prev = curr;
+                curr = curr->next;
+            }
+
+            if (found) {
+                // 從背包移除
+                if (prev == NULL) current_player->backpack = curr->next;
+                else prev->next = curr->next;
+
+                // 加到地圖目前位置
+                Room *curr_room = &map[current_player->x][current_player->y];
+                curr->next = curr_room->ground_items;
+                curr_room->ground_items = curr;
+
+                sprintf(response, "You deposited the %s.\n", curr->name);
+                send(sd, response, strlen(response), 0);
+            } else {
+                send(sd, "You don't have that in your backpack.\n", 38, 0);
+            }
+        } else {
+            send(sd, "Deposit what?\n", 14, 0);
+        }
+    }
     // --- Unknown Command ---
     else {
         char *msg = "Unknown command. Try 'look', 'north', 'south', 'east', 'west', 'take <item>'.\n";
@@ -367,7 +427,7 @@ void init_map() {
 void create_player(int fd) {
     Player *p = (Player *)malloc(sizeof(Player));
     p->socket_fd = fd;
-    strcpy(p->name, "Unknown");
+    sprintf(p->name, "Player%d", fd); // 預設名稱
     p->x = 0;
     p->y = 0;
     p->backpack = NULL;
