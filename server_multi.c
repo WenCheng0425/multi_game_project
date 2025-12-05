@@ -5,12 +5,106 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <netinet/in.h>
 
 #define PORT 8080
 #define MAX_CLIENTS 10
 #define BUFFER_SIZE 1024
 
+#define MAX_NAME 32
+#define MAP_SIZE 3
+
+typedef struct Item {
+    char name[MAX_NAME];   
+    struct Item *next;     
+} Item;
+
+typedef struct Player {
+    int socket_fd;         
+    char name[MAX_NAME];   
+    int x, y;              
+    Item *backpack;        
+    struct Player *next;   
+} Player;
+
+typedef struct Room {
+    Item *ground_items;    
+} Room;
+
+Room map[MAP_SIZE][MAP_SIZE]; 
+Player *player_list_head = NULL;
+
+// 用來新增物品到清單的輔助函式 
+void add_item(Item **head, const char *name) {
+    Item *new_item = (Item *)malloc(sizeof(Item));
+    strcpy(new_item->name, name);
+    new_item->next = *head;
+    *head = new_item;
+}
+
+// 初始化地圖函式
+void init_map() {
+    // 先把地圖清空，確保安全
+    for (int i = 0; i < MAP_SIZE; i++) {
+        for (int j = 0; j < MAP_SIZE; j++) {
+            map[i][j].ground_items = NULL;
+        }
+    }
+
+    // 讀取 map.txt 檔案
+    FILE *fp = fopen("map.txt", "r");
+    if (fp == NULL) {
+        printf("Error: Cannot open map.txt\n");
+        // 如果讀不到檔，我們先手動塞一點資料測試，避免程式掛掉
+        add_item(&map[0][0].ground_items, "Apple");
+        add_item(&map[1][0].ground_items, "Banana");
+        return;
+    }
+
+    int x, y;
+    char item_name[MAX_NAME];
+    // 讀取格式：X座標 Y座標 物品名稱
+    while (fscanf(fp, "%d %d %s", &x, &y, item_name) != EOF) {
+        // 防止 map.txt 寫錯座標導致當機
+        if (x >= 0 && x < MAP_SIZE && y >= 0 && y < MAP_SIZE) {
+            add_item(&map[x][y].ground_items, item_name);
+        }
+    }
+    fclose(fp);
+    printf("Map initialized successfully!\n");
+}
+
+// 新增玩家到遊戲世界
+void create_player(int fd) {
+    Player *p = (Player *)malloc(sizeof(Player));
+    p->socket_fd = fd;
+    strcpy(p->name, "Unknown"); // 暫時叫 Unknown，之後寫 login 再改
+    p->x = 0; // 預設出生在 (0,0)
+    p->y = 0;
+    p->backpack = NULL;
+    
+    // 把新玩家加到全域清單的最前面 (Linked List 插入)
+    p->next = player_list_head;
+    player_list_head = p;
+    
+    printf("Created player structure for socket %d at (0,0)\n", fd);
+}
+
+// 用 Socket ID 找到對應的玩家
+Player *find_player_by_fd(int fd) {
+    Player *current = player_list_head;
+    while (current != NULL) {
+        if (current->socket_fd == fd) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
 int main() {
+    init_map(); // 初始化地圖
+
     int master_socket, addrlen, new_socket, client_socket[MAX_CLIENTS], max_sd, sd, activity, valread;
     struct sockaddr_in address;
     char buffer[BUFFER_SIZE];
@@ -55,7 +149,7 @@ int main() {
     printf("Game Server started on port %d... Waiting for connections...\n", PORT);
     addrlen = sizeof(address);
 
- // 4. 進入無窮迴圈
+    // 4. 進入無窮迴圈
     while (1) {
         FD_ZERO(&readfds);
         FD_SET(master_socket, &readfds);
@@ -81,6 +175,9 @@ int main() {
             }
             printf("New connection: socket fd is %d, ip is %s, port is %d\n", 
                    new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+            
+            // 生出玩家！
+            create_player(new_socket);
 
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (client_socket[i] == 0) {
@@ -114,19 +211,52 @@ int main() {
                 }
                 // 讀到正常的資料
                 else {
-                    // 【修正 3】Server 端再次去換行 (防止 Client 沒弄乾淨)
+                    // 1. 去除換行符號
                     buffer[strcspn(buffer, "\n")] = 0;
                     buffer[strcspn(buffer, "\r")] = 0;
 
-                    // 如果去掉換行後是空的，就不印了 (忽略純按 Enter 的狀況)
-                    if (strlen(buffer) == 0) {
+                    if (strlen(buffer) == 0) continue;
+
+                    printf("Client %d says: %s\n", sd, buffer);
+
+                    // 2. 找出是哪個玩家講話
+                    Player *current_player = find_player_by_fd(sd);
+                    if (current_player == NULL) {
+                        printf("Error: Player not found for socket %d\n", sd);
                         continue;
                     }
 
-                    printf("Received from Client %d: %s\n", i, buffer);
-                    
-                    // 回傳訊息
-                    send(sd, "Server received your message\n", 29, 0);
+                    // 3. 判斷指令
+                    if (strcmp(buffer, "look") == 0) {
+                        // 準備要回傳的字串
+                        char response[BUFFER_SIZE];
+                        memset(response, 0, BUFFER_SIZE); // 清空
+
+                        // 找到玩家所在的房間
+                        Room *curr_room = &map[current_player->x][current_player->y];
+
+                        sprintf(response, "You are at (%d, %d).\nYou see:\n", current_player->x, current_player->y);
+
+                        // 檢查地上有沒有東西
+                        Item *item = curr_room->ground_items;
+                        if (item == NULL) {
+                            strcat(response, "  Nothing.\n");
+                        } else {
+                            while (item != NULL) {
+                                strcat(response, "  - ");
+                                strcat(response, item->name);
+                                strcat(response, "\n");
+                                item = item->next;
+                            }
+                        }
+                        // 寄回去給玩家
+                        send(sd, response, strlen(response), 0);
+                    } 
+                    else {
+                        // 如果看不懂指令
+                        char *msg = "Unknown command. Try 'look'.\n";
+                        send(sd, msg, strlen(msg), 0);
+                    }
                 }
             }
         }

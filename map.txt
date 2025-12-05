@@ -1,0 +1,3 @@
+0 0 Apple
+1 0 Banana
+2 2 Sword

@@ -3,13 +3,15 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/select.h>
 
 #define PORT 8080
+#define BUFFER_SIZE 1024
 
 int main() {
     int sock = 0;
     struct sockaddr_in serv_addr;
-    char buffer[1024] = {0};
+    char buffer[BUFFER_SIZE] = {0};
 
     // 1. 建立 Socket
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -20,54 +22,58 @@ int main() {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(PORT);
 
-    // 設定 IP
+    // 轉換 IP 地址 (連線到本機 127.0.0.1)
     if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
         printf("\nInvalid address/ Address not supported \n");
         return -1;
     }
 
-    // 2. Connect (連線)
+    // 2. 連線
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         printf("\nConnection Failed \n");
         return -1;
     }
-    
-    printf("已連線到 Server! (輸入 exit 可以離開)\n");
 
-    // ==========================================
-    // 3. 修改重點：加入 While 迴圈
-    // ==========================================
-    while(1) {
-        // 清空 buffer，以免留有上一次的垃圾資料
-        memset(buffer, 0, 1024);
+    printf("已連線到 Server! (直接打字並按 Enter 即可發送)\n");
 
-        printf("Enter message: ");
-        // 使用 fgets 讓你可以輸入鍵盤打的字
-        fgets(buffer, 1024, stdin);
+    fd_set readfds; // 檔案描述符集合，用來管理「誰有資料進來」
 
-        // (選用) 處理 fgets 會多吃一個換行符號的問題，把它拿掉
-        buffer[strcspn(buffer, "\n")] = 0;
-        // 【新增這裡】如果輸入長度為 0 (代表只按了 Enter)，就跳過這次迴圈
-            if (strlen(buffer) == 0) {
-                continue;
-            }
+    while (1) {
+        FD_ZERO(&readfds);
+        FD_SET(0, &readfds);       // 0 代表標準輸入 (鍵盤)
+        FD_SET(sock, &readfds);    // sock 代表 Server 的連線
 
-        // 如果輸入 "exit" 就跳出迴圈，結束程式
-        if (strcmp(buffer, "exit") == 0) {
-            printf("Exiting...\n");
-            break;
+        // 使用 select 監聽這兩個來源
+        // sock + 1 是因為 select 需要知道最大的 fd 號碼是多少
+        int activity = select(sock + 1, &readfds, NULL, NULL, NULL);
+
+        if ((activity < 0)) {
+            printf("Select error\n");
         }
 
-        // 傳送訊息給 Server
-        send(sock, buffer, strlen(buffer), 0);
+        // 情況 A：Server 傳來訊息
+        if (FD_ISSET(sock, &readfds)) {
+            memset(buffer, 0, BUFFER_SIZE);
+            int valread = read(sock, buffer, BUFFER_SIZE);
+            if (valread == 0) {
+                printf("Server disconnected.\n");
+                break;
+            }
+            printf("%s", buffer); // 直接印出 Server 講的話
+            fflush(stdout);       // 強制刷新畫面
+        }
 
-        // --- 這裡可以選擇要不要讀 Server 的回覆 ---
-        // 為了簡單測試，我們這邊先不讀 Server 回傳的東西
-        // 因為如果 Server 沒回傳，Client 卡在這裡 read 會動不了
-        // ----------------------------------------
+        // 情況 B：使用者在鍵盤打字
+        if (FD_ISSET(0, &readfds)) {
+            memset(buffer, 0, BUFFER_SIZE);
+            // 讀取鍵盤輸入
+            if (fgets(buffer, BUFFER_SIZE, stdin) != NULL) {
+                // 傳送給 Server
+                send(sock, buffer, strlen(buffer), 0);
+            }
+        }
     }
 
-    // 4. 關閉 Socket
     close(sock);
     return 0;
 }
