@@ -35,6 +35,15 @@ Player *find_player_by_fd(int fd);
 int init_server_socket(int Port);
 void process_command(int sd, Player *current_player, char *buffer);
 
+void handle_look(int sd, Player *current_player);
+void handle_move(int sd, Player *current_player, const char *direction);
+void handle_inventory(int sd, Player *current_player);
+void handle_take(int sd, Player *current_player, char *item_name);
+void handle_deposit(int sd, Player *current_player, char *item_name);
+
+void broadcast_room(Player *sender, char *message);
+void handle_tell(int sd, Player *current_player, char *buffer);
+void handle_give(int sd, Player *current_player, char *buffer);
 /* USER CODE BEGIN 0 */
 // 輔助函式：新增物品到 Linked List 
 void add_item(Item **head, const char *name) {
@@ -204,176 +213,345 @@ int init_server_socket(int port) {
   * @brief 處理遊戲核心邏輯 (移動、查看、撿取)
   */
 void process_command(int sd, Player *current_player, char *buffer) {
-    char response[BUFFER_SIZE];
-    char temp[100]; // 暫存字串用
-    memset(response, 0, BUFFER_SIZE);
-
-    // --- Command: LOOK ---
+    // 1. 處理 LOOK
     if (strncmp(buffer, "look", 4) == 0) {
-        // 1. 顯示 Location
-        sprintf(response, "\nLocation: %d %d\n", current_player->x, current_player->y);
-
-        // 2. 顯示 Player(s)
-        strcat(response, "Player(s):");
-        Player *p = player_list_head; // 使用全域變數 player_list_head
-        while (p != NULL) {
-            // 檢查是否在同一個房間
-            if (p->x == current_player->x && p->y == current_player->y) {
-                if (p->socket_fd == sd) {
-                    sprintf(temp, " %s(Me)", p->name); // 自己
-                } else {
-                    sprintf(temp, " %s", p->name);     // 別人
-                }
-                strcat(response, temp);
-            }
-            p = p->next;
-        }
-        strcat(response, "\n");
-
-        // 3. 顯示 Item(s)
-        strcat(response, "Item(s):");
-        Room *curr_room = &map[current_player->x][current_player->y];
-        Item *item = curr_room->ground_items;
-        
-        if (item == NULL) {
-            strcat(response, " (empty)");
-        } else {
-            while (item != NULL) {
-                sprintf(temp, " %s", item->name);
-                strcat(response, temp);
-                item = item->next;
-            }
-        }
-        strcat(response, "\n");
-        
-        send(sd, response, strlen(response), 0);
+        handle_look(sd, current_player);
     }
-    // --- Command: MOVE (North, South, East, West) ---
-    else if (strncmp(buffer, "north", 5) == 0) {
-        if (current_player->y > 0) {
-            current_player->y--;
-            send(sd, "You moved North.\n", 17, 0);
-        } else {
-            send(sd, "You hit a wall!\n", 16, 0);
-        }
-    }
-    else if (strncmp(buffer, "south", 5) == 0) {
-        if (current_player->y < MAP_SIZE - 1) {
-            current_player->y++;
-            send(sd, "You moved South.\n", 17, 0);
-        } else {
-            send(sd, "You hit a wall!\n", 16, 0);
-        }
-    }
-    else if (strncmp(buffer, "east", 4) == 0) {
-        if (current_player->x < MAP_SIZE - 1) {
-            current_player->x++;
-            send(sd, "You moved East.\n", 16, 0);
-        } else {
-            send(sd, "You hit a wall!\n", 16, 0);
-        }
-    }
-    else if (strncmp(buffer, "west", 4) == 0) {
-        if (current_player->x > 0) {
-            current_player->x--;
-            send(sd, "You moved West.\n", 16, 0);
-        } else {
-            send(sd, "You hit a wall!\n", 16, 0);
-        }
-    }
-    // --- Command: INVENTORY ---
+    // 2. 處理 移動 (統一交給 handle_move)
+    else if (strncmp(buffer, "north", 5) == 0) handle_move(sd, current_player, "North");
+    else if (strncmp(buffer, "south", 5) == 0) handle_move(sd, current_player, "South");
+    else if (strncmp(buffer, "east", 4) == 0)  handle_move(sd, current_player, "East");
+    else if (strncmp(buffer, "west", 4) == 0)  handle_move(sd, current_player, "West");
+    // 3. 處理 背包 (Inventory)
     else if (strncmp(buffer, "inventory", 9) == 0 || strncmp(buffer, "i", 1) == 0) {
-        sprintf(response, "Your Backpack:\n");
-        Item *item = current_player->backpack;
-        if (item == NULL) {
-            strcat(response, "  (Empty)\n");
-        } else {
-            while (item != NULL) {
-                strcat(response, "  - ");
-                strcat(response, item->name);
-                strcat(response, "\n");
-                item = item->next;
-            }
-        }
-        send(sd, response, strlen(response), 0);
+        handle_inventory(sd, current_player);
     }
-    // --- Command: TAKE ---
+    // 4. 處理 撿東西 (TAKE)
     else if (strncmp(buffer, "take", 4) == 0) {
-        char target_name[50];
+        char target_name[MAX_NAME];
+        // 檢查有沒有輸入物品名稱
         if (sscanf(buffer + 5, "%s", target_name) == 1) {
-            Room *curr_room = &map[current_player->x][current_player->y];
-            Item *curr = curr_room->ground_items;
-            Item *prev = NULL;
-            int found = 0;
-            
-            while (curr != NULL) {
-                if (strcasecmp(curr->name, target_name) == 0) { 
-                    found = 1; 
-                    break; 
-                }
-                prev = curr;
-                curr = curr->next;
-            }
-
-            if (found) {
-                // 從地上移除
-                if (prev == NULL) curr_room->ground_items = curr->next;
-                else prev->next = curr->next;
-
-                // 加到背包
-                curr->next = current_player->backpack;
-                current_player->backpack = curr;
-                
-                sprintf(response, "You took the %s.\n", curr->name);
-                send(sd, response, strlen(response), 0);
-            } else {
-                send(sd, "You don't see that here.\n", 25, 0);
-            }
+            handle_take(sd, current_player, target_name);
         } else {
             send(sd, "Take what?\n", 11, 0);
         }
     }
-    // --- Command: DEPOSIT ---
+    // 5. 處理 丟東西 (DEPOSIT)
     else if (strncmp(buffer, "deposit", 7) == 0) {
-        char target_name[50];
+        char target_name[MAX_NAME];
         if (sscanf(buffer + 8, "%s", target_name) == 1) {
-            Item *curr = current_player->backpack;
-            Item *prev = NULL;
-            int found = 0;
-
-            // 在背包中尋找物品
-            while (curr != NULL) {
-                if (strcasecmp(curr->name, target_name) == 0) {
-                    found = 1;
-                    break;
-                }
-                prev = curr;
-                curr = curr->next;
-            }
-
-            if (found) {
-                // 從背包移除
-                if (prev == NULL) current_player->backpack = curr->next;
-                else prev->next = curr->next;
-
-                // 加到地圖目前位置
-                Room *curr_room = &map[current_player->x][current_player->y];
-                curr->next = curr_room->ground_items;
-                curr_room->ground_items = curr;
-
-                sprintf(response, "You deposited the %s.\n", curr->name);
-                send(sd, response, strlen(response), 0);
-            } else {
-                send(sd, "You don't have that in your backpack.\n", 38, 0);
-            }
+            handle_deposit(sd, current_player, target_name);
         } else {
             send(sd, "Deposit what?\n", 14, 0);
         }
     }
-    // --- Unknown Command ---
+    // 6. 處理 私訊 (TELL)
+    else if (strncmp(buffer, "tell", 4) == 0) {
+        handle_tell(sd, current_player, buffer);
+    }
+    // 7. 處理 交付物品 (GIVE)
+    else if (strncmp(buffer, "give", 4) == 0) {
+    handle_give(sd, current_player, buffer);
+}
+    // 8. 未知指令
     else {
-        char *msg = "Unknown command. Try 'look', 'north', 'south', 'east', 'west', 'take <item>'.\n";
+        char *msg = "Unknown command. Try 'look', 'north', 'take <item>', 'i'.\n";
         send(sd, msg, strlen(msg), 0);
+    }
+}
+/* ========================================================== */
+/* 功能獨立函式          */
+/* ========================================================== */
+
+void handle_look(int sd, Player *current_player) {
+    char response[BUFFER_SIZE];
+    char temp[100];
+    memset(response, 0, BUFFER_SIZE);
+
+    // 1. 顯示 Location
+    sprintf(response, "\nLocation: %d %d\n", current_player->x, current_player->y);
+
+    // 2. 顯示 Player(s)
+    strcat(response, "Player(s):");
+    Player *p = player_list_head; 
+    while (p != NULL) {
+        // 檢查是否在同一個房間
+        if (p->x == current_player->x && p->y == current_player->y) {
+            if (p->socket_fd == sd) {
+                sprintf(temp, " %s(Me)", p->name);
+            } else {
+                sprintf(temp, " %s", p->name);
+            }
+            strcat(response, temp);
+        }
+        p = p->next;
+    }
+    strcat(response, "\n");
+
+    // 3. 顯示 Item(s)
+    strcat(response, "Item(s):");
+    Room *curr_room = &map[current_player->x][current_player->y];
+    Item *item = curr_room->ground_items;
+    
+    if (item == NULL) {
+        strcat(response, " (empty)");
+    } else {
+        while (item != NULL) {
+            sprintf(temp, " %s", item->name);
+            strcat(response, temp);
+            item = item->next;
+        }
+    }
+    strcat(response, "\n");
+    
+    send(sd, response, strlen(response), 0);
+}
+
+void handle_move(int sd, Player *p, const char *direction) {
+    int moved = 0;
+    char broadcast_msg[100];
+
+    // 移動前的廣播 (告訴舊房間的人)
+    sprintf(broadcast_msg, "\n[通知] %s left going %s.\n", p->name, direction);
+    broadcast_room(p, broadcast_msg);
+
+    // 判斷方向與邊界檢查
+    if (strcmp(direction, "North") == 0) {
+        if (p->y > 0) { p->y--; moved = 1; }
+    } 
+    else if (strcmp(direction, "South") == 0) {
+        if (p->y < MAP_SIZE - 1) { p->y++; moved = 1; }
+    }
+    else if (strcmp(direction, "East") == 0) {
+        if (p->x < MAP_SIZE - 1) { p->x++; moved = 1; }
+    }
+    else if (strcmp(direction, "West") == 0) {
+        if (p->x > 0) { p->x--; moved = 1; }
+    }
+
+    // 回覆訊息
+    if (moved) {
+       // 告訴自己
+        char msg[64];
+        sprintf(msg, "You moved %s.\n", direction);
+        send(sd, msg, strlen(msg), 0);
+
+        // 移動後的廣播 (告訴新房間的人)
+        sprintf(broadcast_msg, "\n[通知] %s entered the room.\n", p->name);
+        broadcast_room(p, broadcast_msg);
+
+        // 自動幫玩家看一眼新房間 (優化體驗)
+        handle_look(sd, p); 
+    } else {
+        send(sd, "You hit a wall!\n", 16, 0);
+    }
+}
+
+void handle_inventory(int sd, Player *current_player) {
+    char response[BUFFER_SIZE];
+    memset(response, 0, BUFFER_SIZE);
+    
+    sprintf(response, "Your Backpack:\n");
+    Item *item = current_player->backpack;
+    
+    if (item == NULL) {
+        strcat(response, "  (Empty)\n");
+    } else {
+        while (item != NULL) {
+            strcat(response, "  - ");
+            strcat(response, item->name);
+            strcat(response, "\n");
+            item = item->next;
+        }
+    }
+    send(sd, response, strlen(response), 0);
+}
+
+void handle_take(int sd, Player *current_player, char *target_name) {
+    char response[BUFFER_SIZE];
+    Room *curr_room = &map[current_player->x][current_player->y];
+    Item *curr = curr_room->ground_items;
+    Item *prev = NULL;
+    int found = 0;
+    
+    // 在地上找東西
+    while (curr != NULL) {
+        if (strcasecmp(curr->name, target_name) == 0) { 
+            found = 1; 
+            break; 
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    if (found) {
+        // 從地上移除
+        if (prev == NULL) curr_room->ground_items = curr->next;
+        else prev->next = curr->next;
+
+        // 加到背包 (頭插法)
+        curr->next = current_player->backpack;
+        current_player->backpack = curr;
+        
+        sprintf(response, "You took the %s.\n", curr->name);
+        send(sd, response, strlen(response), 0);
+    } else {
+        send(sd, "You don't see that here.\n", 25, 0);
+    }
+}
+
+void handle_deposit(int sd, Player *current_player, char *target_name) {
+    char response[BUFFER_SIZE];
+    Item *curr = current_player->backpack;
+    Item *prev = NULL;
+    int found = 0;
+
+    // 在背包找東西
+    while (curr != NULL) {
+        if (strcasecmp(curr->name, target_name) == 0) {
+            found = 1;
+            break;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    if (found) {
+        // 從背包移除
+        if (prev == NULL) current_player->backpack = curr->next;
+        else prev->next = curr->next;
+
+        // 加到地上 (頭插法)
+        Room *curr_room = &map[current_player->x][current_player->y];
+        curr->next = curr_room->ground_items;
+        curr_room->ground_items = curr;
+
+        sprintf(response, "You deposited the %s.\n", curr->name);
+        send(sd, response, strlen(response), 0);
+    } else {
+        send(sd, "You don't have that in your backpack.\n", 38, 0);
+    }
+}    
+
+void broadcast_room(Player *sender, char *message) {
+    Player *p = player_list_head;
+    while (p != NULL) {
+        // 1. 必須在同一個房間
+        // 2. 不能是發送者自己 (sender)
+        if (p->x == sender->x && p->y == sender->y && p->socket_fd != sender->socket_fd) {
+            send(p->socket_fd, message, strlen(message), 0);
+        }
+        p = p->next;
+    }
+}
+
+void handle_tell(int sd, Player *current_player, char *buffer) {
+    char target_name[MAX_NAME];
+    char message[BUFFER_SIZE];
+    
+    // 解析指令： tell <name> <message...>
+    // 注意：這裡稍微複雜一點，因為 message 可能包含空白
+    //我們先讀取名字
+    if (sscanf(buffer + 5, "%s", target_name) != 1) {
+        send(sd, "Usage: tell <player_name> <message>\n", 36, 0);
+        return;
+    }
+
+    // 接著尋找訊息開始的位置
+    // buffer + 5 是跳過 "tell "
+    // 然後我們要跳過 target_name 的長度，再跳過中間的空白
+    char *msg_start = buffer + 5 + strlen(target_name);
+    while(*msg_start == ' ') msg_start++; // 跳過空白
+
+    if (strlen(msg_start) == 0) {
+        send(sd, "Tell what?\n", 11, 0);
+        return;
+    }
+
+    // 尋找目標玩家
+    Player *p = player_list_head;
+    int found = 0;
+    while (p != NULL) {
+        if (strcmp(p->name, target_name) == 0) {
+            // 找到了！發送訊息
+            char format_msg[BUFFER_SIZE];
+            sprintf(format_msg, "\n[私訊] %s tells you: %s\n", current_player->name, msg_start);
+            send(p->socket_fd, format_msg, strlen(format_msg), 0);
+            
+            send(sd, "Message sent.\n", 14, 0);
+            found = 1;
+            break;
+        }
+        p = p->next;
+    }
+
+    if (!found) {
+        send(sd, "Player not found.\n", 18, 0);
+    }
+}
+
+void handle_give(int sd, Player *current_player, char *buffer) {
+    char target_name[MAX_NAME];
+    char item_name[MAX_NAME];
+    
+    // 解析指令： give <player> <item>
+    if (sscanf(buffer + 5, "%s %s", target_name, item_name) != 2) {
+        send(sd, "Usage: give <player_name> <item_name>\n", 34, 0);
+        return;
+    }
+
+    // 1. 找玩家 (必須在同一個房間)
+    Player *target = player_list_head;
+    int found_player = 0;
+    while (target != NULL) {
+        if (strcmp(target->name, target_name) == 0) {
+            if (target->x == current_player->x && target->y == current_player->y) {
+                found_player = 1;
+            }
+            break;
+        }
+        target = target->next;
+    }
+
+    if (!found_player) {
+        send(sd, "Player not found or not in this room.\n", 34, 0);
+        return;
+    }
+
+    // 2. 找物品 (必須在我的背包裡)
+    Item *curr = current_player->backpack;
+    Item *prev = NULL;
+    int found_item = 0;
+
+    while (curr != NULL) {
+        if (strcasecmp(curr->name, item_name) == 0) {
+            found_item = 1;
+            break;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    if (found_item) {
+        // 3. 轉移物品
+        // (A) 從我的背包移除
+        if (prev == NULL) current_player->backpack = curr->next;
+        else prev->next = curr->next;
+
+        // (B) 加到對方的背包 (頭插法)
+        curr->next = target->backpack;
+        target->backpack = curr;
+
+        // 4. 通知雙方
+        char msg[BUFFER_SIZE];
+        sprintf(msg, "You gave %s to %s.\n", item_name, target_name);
+        send(sd, msg, strlen(msg), 0);
+
+        sprintf(msg, "%s gave you a %s.\n", current_player->name, item_name);
+        send(target->socket_fd, msg, strlen(msg), 0);
+
+    } else {
+        send(sd, "You don't have that item.\n", 24, 0);
     }
 }
 
