@@ -33,6 +33,7 @@ void init_map(void);
 void create_player(int fd);
 Player *find_player_by_fd(int fd);
 int init_server_socket(int Port);
+int init_multicast_socket();
 int process_command(int sd, Player *current_player, char *buffer);
 
 void handle_look(int sd, Player *current_player);
@@ -90,6 +91,8 @@ int main() {
     char buffer[BUFFER_SIZE];
     fd_set readfds;
 
+    int udp_socket;
+    
     // ★ 修改點 1：改用 sockaddr_storage 這個大容器，才能同時裝下 IPv4 或 IPv6
     struct sockaddr_storage address; 
     socklen_t addrlen;
@@ -102,6 +105,12 @@ int main() {
     /* 3. 啟動伺服器 (Start Server) */
     // 我們把 socket, bind, listen 全部封裝進去了
     master_socket = init_server_socket(DEFAULT_PORT);
+
+    // ★ 新增：啟動 UDP Server (搜尋用)
+    udp_socket = init_multicast_socket();
+    if (udp_socket < 0) {
+        printf("Multicast init failed, auto-discovery disabled.\n");
+    }
 
     // ★ 修改點 2：這裡不需要再手動填寫 IPv4 資訊 (如 sin_family = AF_INET...)
     // 因為 accept 會自動幫我們填入連線者的資訊，我們只要重置長度就好
@@ -124,8 +133,16 @@ int main() {
     while (1) {
         // 清空並重新設定 File Descriptor Set
         FD_ZERO(&readfds);
+
+        // 加入 TCP Master Socket
         FD_SET(master_socket, &readfds);
         max_sd = master_socket;
+
+        // ★ 新增：加入 UDP Socket 到監聽列表
+        if (udp_socket > 0) {
+            FD_SET(udp_socket, &readfds);
+            if (udp_socket > max_sd) max_sd = udp_socket;
+        }
 
         // 加入所有連線中的 client
         for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -139,6 +156,29 @@ int main() {
 
         if ((activity < 0) && (errno != EINTR)) {
             printf("select error\n");
+        }
+        // --------------------------------------------------
+        // ★ 新增：處理 UDP Multicast 請求 (有人在找 Server 嗎？)
+        // --------------------------------------------------
+        if (udp_socket > 0 && FD_ISSET(udp_socket, &readfds)) {
+            char udp_buf[128];
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            
+            // 接收 UDP 封包
+            int n = recvfrom(udp_socket, udp_buf, sizeof(udp_buf), 0, 
+                           (struct sockaddr*)&client_addr, &client_len);
+            if (n > 0) {
+                udp_buf[n] = '\0';
+                // 如果通關密語正確
+                if (strcmp(udp_buf, DISCOVERY_MSG) == 0) {
+                    printf("[Discovery] Client searching from %s\n", inet_ntoa(client_addr.sin_addr));
+                    
+                    // 回覆：我在這！
+                    sendto(udp_socket, DISCOVERY_RESP, strlen(DISCOVERY_RESP), 0,
+                           (struct sockaddr*)&client_addr, client_len);
+                }
+            }
         }
 
         /* 5. 處理新連線 (Handle New Connection) */
@@ -290,6 +330,51 @@ int init_server_socket(int port) {
     }
 
     return master_socket;
+}
+
+/* 初始化 UDP Multicast Socket */
+int init_multicast_socket() {
+    int sock;
+    struct sockaddr_in addr;
+    struct ip_mreq mreq;
+    int reuse = 1;
+
+    // 1. 建立 UDP Socket
+    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Multicast socket creation failed");
+        return -1;
+    }
+
+    // 2. 允許 Port 重用 (避免重開 Server 時被卡住)
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse)) < 0) {
+        perror("Setting SO_REUSEADDR error");
+        close(sock);
+        return -1;
+    }
+
+    // 3. 綁定到 Multicast Port (8888)
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY); 
+    addr.sin_port = htons(MCAST_PORT);
+
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("Binding multicast socket failed");
+        close(sock);
+        return -1;
+    }
+
+    // 4. 加入多播群組 (239.0.0.1)
+    mreq.imr_multiaddr.s_addr = inet_addr(MCAST_GRP);
+    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) < 0) {
+        perror("Adding multicast group failed");
+        close(sock);
+        return -1;
+    }
+
+    printf(">> Multicast Discovery Listener active on %s:%d\n", MCAST_GRP, MCAST_PORT);
+    return sock;
 }
 
 /**

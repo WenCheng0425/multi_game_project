@@ -11,6 +11,12 @@
 #define MAX_NAME 32
 #define MAP_SIZE 3
 
+// --- Multicast 設定 (Server Discovery) ---
+#define MCAST_GRP "239.0.0.1"  // 多播組 IP (224.0.0.0 ~ 239.255.255.255)
+#define MCAST_PORT 8888        // 多播專用 Port (跟遊戲的 8080 分開)
+#define DISCOVERY_MSG "MUD_WHO" // Client 發出的尋人啟事
+#define DISCOVERY_RESP "MUD_HERE" // Server 回應的訊號
+
 // --- 共用結構體 (Structs) ---
 // 注意順序：因為 Player 裡面有 Item，所以 Item 要放前面
 

@@ -8,6 +8,57 @@
 // 我們不再這裡寫死 IP，改用變數接收
 // #define SERVER_IP "127.0.0.1"
 
+/* 自動搜尋 Server IP */
+int discover_server_ip(char *found_ip) {
+    int sock;
+    struct sockaddr_in addr;
+    char buffer[128];
+    struct timeval tv;
+
+    printf("正在搜尋區域網路內的伺服器 (Auto Discovery)...\n");
+
+    // 1. 建立 UDP Socket
+    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("UDP socket creation failed");
+        return 0;
+    }
+
+    // 2. 設定目標地址 (Multicast Group)
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr(MCAST_GRP);
+    addr.sin_port = htons(MCAST_PORT);
+
+    // 3. 發送搜尋請求 "MUD_WHO"
+    sendto(sock, DISCOVERY_MSG, strlen(DISCOVERY_MSG), 0,
+           (struct sockaddr*)&addr, sizeof(addr));
+
+    // 4. 設定超時 (等 2 秒，沒人回就算了)
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
+    // 5. 等待回應
+    struct sockaddr_in server_addr;
+    socklen_t len = sizeof(server_addr);
+    int n = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&server_addr, &len);
+
+    if (n > 0) {
+        buffer[n] = '\0';
+        if (strcmp(buffer, DISCOVERY_RESP) == 0) {
+            // 成功收到 Server 回應，將 IP 轉成字串
+            strcpy(found_ip, inet_ntoa(server_addr.sin_addr));
+            printf(">> 找到伺服器！ IP: %s\n", found_ip);
+            close(sock);
+            return 1; // 成功
+        }
+    }
+
+    printf(">> 未偵測到伺服器 (Timeout).\n");
+    close(sock);
+    return 0; // 失敗
+}
+
 int main(int argc, char *argv[]) {
     int sock = 0;
     // 準備兩個結構，看情況用哪一個
@@ -15,16 +66,24 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in6 serv_addr_v6;
 
     char buffer[BUFFER_SIZE] = {0};
-    char *target_ip;
+    
+    // 準備一個字串陣列來存 IP (不管是輸入的，還是自動找到的)
+    char target_ip_storage[64]; 
+    char *target_ip = target_ip_storage;
 
     // --- 1. 決定目標 IP ---
     if (argc < 2) {
-        // 如果使用者沒輸入 IP，預設連本機 (開發用)
-        printf("未輸入 IP，預設連線到 127.0.0.1\n");
-        target_ip = "127.0.0.1";
+        // 使用者沒輸入 IP -> 啟動自動搜尋！
+        if (discover_server_ip(target_ip_storage)) {
+            // 搜尋成功，target_ip 已經被填入 Server 的 IP 了
+        } else {
+            // 搜尋失敗，退回預設值
+            printf("自動搜尋失敗，預設連線到 127.0.0.1\n");
+            strcpy(target_ip, "127.0.0.1");
+        }
     } else {
-        // 如果使用者有輸入，就用輸入的 IP (連線用)
-        target_ip = argv[1];
+        // 使用者有輸入，直接用
+        strcpy(target_ip, argv[1]);
     }
     // --- 2. 判斷是 IPv4 還是 IPv6 (檢查有沒有冒號 ':') ---
     if (strchr(target_ip, ':') != NULL) {
