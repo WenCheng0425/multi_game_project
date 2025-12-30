@@ -85,11 +85,14 @@ int main() {
     init_map();
 
     /* 2. 網路變數定義 (Network Variables) */
-    int master_socket, addrlen, new_socket, client_socket[MAX_CLIENTS];
+    int master_socket, new_socket, client_socket[MAX_CLIENTS];
     int max_sd, sd, activity, valread;
-    struct sockaddr_in address;
     char buffer[BUFFER_SIZE];
     fd_set readfds;
+
+    // ★ 修改點 1：改用 sockaddr_storage 這個大容器，才能同時裝下 IPv4 或 IPv6
+    struct sockaddr_storage address; 
+    socklen_t addrlen;
 
     // 初始化 client socket 陣列
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -99,13 +102,18 @@ int main() {
     /* 3. 啟動伺服器 (Start Server) */
     // 我們把 socket, bind, listen 全部封裝進去了
     master_socket = init_server_socket(DEFAULT_PORT);
-    
+
+    // ★ 修改點 2：這裡不需要再手動填寫 IPv4 資訊 (如 sin_family = AF_INET...)
+    // 因為 accept 會自動幫我們填入連線者的資訊，我們只要重置長度就好
+    addrlen = sizeof(address);
+
+    /* IPv4 範例使用 (已註解)
     // 為了 accept 需要重新賦值 address 結構
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(DEFAULT_PORT);
     addrlen = sizeof(address);
-
+    */
     printf("========================================\n");
     printf(" 遊戲伺服器已啟動 (Game Server Started) \n");
     printf(" 監聽 Port: %d\n", DEFAULT_PORT);
@@ -135,13 +143,30 @@ int main() {
 
         /* 5. 處理新連線 (Handle New Connection) */
         if (FD_ISSET(master_socket, &readfds)) {
+            // ★ 修改點 3：accept 使用通用結構 & 指標轉型
+            addrlen = sizeof(address);
             if ((new_socket = accept(master_socket, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
                 perror("accept");
                 exit(EXIT_FAILURE);
             }
-           printf("[新連線] Socket fd: %d, IP: %s, Port: %d\n", 
-                   new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
-            
+            // ★ 修改點 4：判斷是 v4 還是 v6 並顯示正確 IP
+            char ip_str[INET6_ADDRSTRLEN]; // 準備一個夠長的字串陣列
+            int port = 0;
+
+            if (address.ss_family == AF_INET) {
+                // 如果是 IPv4
+                struct sockaddr_in *s = (struct sockaddr_in *)&address;
+                port = ntohs(s->sin_port);
+                inet_ntop(AF_INET, &s->sin_addr, ip_str, sizeof(ip_str));
+            } else { 
+                // 如果是 IPv6
+                struct sockaddr_in6 *s = (struct sockaddr_in6 *)&address;
+                port = ntohs(s->sin6_port);
+                inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
+            }
+
+            printf("[新連線] Socket fd: %d, IP: %s, Port: %d\n", new_socket, ip_str, port);
+
             // 創建遊戲角色
             create_player(new_socket);
 
@@ -164,8 +189,18 @@ int main() {
 
                 if (valread <= 0) {
                     // 斷線處理
-                    getpeername(sd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
-                    printf("[斷線] Host disconnected, fd %d, IP %s\n", sd, inet_ntoa(address.sin_addr));
+                    // ★ 修改點 5：斷線顯示也要支援 IPv6 (不然會亂碼)
+                    getpeername(sd, (struct sockaddr*)&address, &addrlen);
+                    
+                    char ip_str[INET6_ADDRSTRLEN];
+                    if (address.ss_family == AF_INET) {
+                        struct sockaddr_in *s = (struct sockaddr_in *)&address;
+                        inet_ntop(AF_INET, &s->sin_addr, ip_str, sizeof(ip_str));
+                    } else {
+                        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&address;
+                        inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
+                    }
+                    printf("[斷線] Host disconnected, fd %d, IP %s\n", sd, ip_str);
                     remove_player(sd); // 移除玩家
                     close(sd);
                     client_socket[i] = 0;
@@ -213,32 +248,42 @@ int main() {
   */
 int init_server_socket(int port) {
     int master_socket;
-    struct sockaddr_in address;
+    struct sockaddr_in6 address; // ★ 改用 IPv6 結構
     int opt = 1;
+    int no = 0;
 
-    // Create socket
-    if ((master_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    // 1. 建立 IPv6 Socket (AF_INET6)
+    if ((master_socket = socket(AF_INET6, SOCK_STREAM, 0)) == 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
 
-    // Set socket options
+    // 2. 設定 Socket 選項：允許 Port 重用
     if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
-        perror("setsockopt");
+        perror("setsockopt reuseaddr");
         exit(EXIT_FAILURE);
     }
 
-    // Bind
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
+    // 3. ★ 關鍵步驟：開啟 Dual Stack (讓 IPv6 Socket 也能收 IPv4)
+    // IPV6_V6ONLY = 0 代表「不只」收 v6，也要收 v4
+    if (setsockopt(master_socket, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&no, sizeof(no)) < 0) {
+        perror("setsockopt v6only");
+        exit(EXIT_FAILURE);
+    }
+
+    // 4. Bind (綁定位址)
+    memset(&address, 0, sizeof(address));
+    address.sin6_family = AF_INET6;
+    address.sin6_addr = in6addr_any; // ★ 相當於 IPv4 的 INADDR_ANY，但這是 IPv6 版
+    address.sin6_port = htons(port);
     
+    // 注意轉型成 (struct sockaddr *)
     if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
 
-    // Listen
+    // 5. Listen
     if (listen(master_socket, 3) < 0) {
         perror("listen");
         exit(EXIT_FAILURE);

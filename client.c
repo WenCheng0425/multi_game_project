@@ -10,11 +10,14 @@
 
 int main(int argc, char *argv[]) {
     int sock = 0;
-    struct sockaddr_in serv_addr;
+    // 準備兩個結構，看情況用哪一個
+    struct sockaddr_in serv_addr_v4;
+    struct sockaddr_in6 serv_addr_v6;
+
     char buffer[BUFFER_SIZE] = {0};
     char *target_ip;
 
-    // --- 這裡加入了判斷邏輯 ---
+    // --- 1. 決定目標 IP ---
     if (argc < 2) {
         // 如果使用者沒輸入 IP，預設連本機 (開發用)
         printf("未輸入 IP，預設連線到 127.0.0.1\n");
@@ -23,30 +26,62 @@ int main(int argc, char *argv[]) {
         // 如果使用者有輸入，就用輸入的 IP (連線用)
         target_ip = argv[1];
     }
-    // ------------------------
+    // --- 2. 判斷是 IPv4 還是 IPv6 (檢查有沒有冒號 ':') ---
+    if (strchr(target_ip, ':') != NULL) {
+        // ==========================
+        //      IPv6 連線模式
+        // ==========================
+        printf("偵測到 IPv6 位址 [%s]...\n", target_ip);
 
-    // 1. 建立 Socket
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        printf("\n Socket creation error \n");
-        return -1;
-    }
+        // 建立 IPv6 Socket
+        if ((sock = socket(AF_INET6, SOCK_STREAM, 0)) < 0) {
+            printf("\n Socket creation error (IPv6) \n");
+            return -1;
+        }
 
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(DEFAULT_PORT);
+        memset(&serv_addr_v6, 0, sizeof(serv_addr_v6));
+        serv_addr_v6.sin6_family = AF_INET6;
+        serv_addr_v6.sin6_port = htons(DEFAULT_PORT);
 
-    // 轉換 IP 地址 (連線到本機 127.0.0.1)
-    if (inet_pton(AF_INET, target_ip, &serv_addr.sin_addr) <= 0) {
-        printf("\n無效的 IP 位址: %s \n", target_ip);
-        return -1;
-    }
+        // 轉換 IPv6 地址
+        if (inet_pton(AF_INET6, target_ip, &serv_addr_v6.sin6_addr) <= 0) {
+            printf("\n無效的 IPv6 位址: %s \n", target_ip);
+            return -1;
+        }
 
-    printf("嘗試連線到 %s:%d ...\n", target_ip, DEFAULT_PORT);
+        printf("嘗試連線到 IPv6 Server...\n");
+        if (connect(sock, (struct sockaddr *)&serv_addr_v6, sizeof(serv_addr_v6)) < 0) {
+            printf("\n連線失敗 (IPv6 Connection Failed)\n");
+            return -1;
+        }
 
-    // 2. 連線
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        printf("\n連線失敗 (Connection Failed)\n");
-        printf("請檢查: 1. Server開了嗎? 2. IP對嗎? 3. 防火牆關了嗎?\n");
-        return -1;
+    } else {
+        // ==========================
+        //      IPv4 連線模式
+        // ==========================
+        printf("偵測到 IPv4 位址 %s...\n", target_ip);
+
+        // 建立 IPv4 Socket
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            printf("\n Socket creation error (IPv4) \n");
+            return -1;
+        }
+
+        memset(&serv_addr_v4, 0, sizeof(serv_addr_v4));
+        serv_addr_v4.sin_family = AF_INET;
+        serv_addr_v4.sin_port = htons(DEFAULT_PORT);
+
+        // 轉換 IPv4 地址
+        if (inet_pton(AF_INET, target_ip, &serv_addr_v4.sin_addr) <= 0) {
+            printf("\n無效的 IPv4 位址: %s \n", target_ip);
+            return -1;
+        }
+
+        printf("嘗試連線到 IPv4 Server...\n");
+        if (connect(sock, (struct sockaddr *)&serv_addr_v4, sizeof(serv_addr_v4)) < 0) {
+            printf("\n連線失敗 (IPv4 Connection Failed)\n");
+            return -1;
+        }
     }
 
     printf("連線成功！(直接打字並按 Enter 即可發送)\n");
