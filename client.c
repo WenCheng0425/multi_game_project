@@ -50,7 +50,18 @@ int main(int argc, char *argv[]) {
     }
 
     printf("連線成功！(直接打字並按 Enter 即可發送)\n");
+    // 主動接收歡迎訊息 
+    char welcome_buffer[2048] = {0};
+    int valread = recv(sock, welcome_buffer, sizeof(welcome_buffer) - 1, 0);
+    
+    if (valread > 0) {
+        // ★★★ 新增：解密歡迎訊息 ★★★
+        xor_process(welcome_buffer, valread);
 
+        welcome_buffer[valread] = '\0';
+        printf("%s\n", welcome_buffer);
+        fflush(stdout);
+    }
     fd_set readfds;
 
     while (1) {
@@ -74,6 +85,9 @@ int main(int argc, char *argv[]) {
                 printf("Server disconnected.\n");
                 break;
             }
+            // ★★★ 新增：解密 Server 傳來的內容 ★★★
+            xor_process(buffer, valread);
+
             printf("%s", buffer); // 直接印出 Server 講的話
             fflush(stdout);       // 強制刷新畫面
         }
@@ -83,6 +97,10 @@ int main(int argc, char *argv[]) {
             memset(buffer, 0, BUFFER_SIZE);
             // 讀取鍵盤輸入
             if (fgets(buffer, BUFFER_SIZE, stdin) != NULL) {
+                // ★★★ 新增：發送前先加密！ ★★★
+                int len = strlen(buffer);
+
+                xor_process(buffer, len);
                 // 傳送給 Server
                 send(sock, buffer, strlen(buffer), 0);
             }

@@ -58,6 +58,22 @@ void add_item(Item **head, const char *name) {
     new_item->next = *head;
     *head = new_item;
 }
+void send_encrypted(int sd, char *msg, int len, int flags) {
+    char buffer[BUFFER_SIZE];
+    
+    // 安全檢查：如果是空的就不處理
+    if (msg == NULL) return;
+
+    // 1. 複製字串 (這裡我們忽略傳進來的 len，直接用 strlen 比較保險)
+    strncpy(buffer, msg, BUFFER_SIZE - 1);
+    buffer[BUFFER_SIZE - 1] = '\0'; // 確保結尾
+
+    // 2. 加密
+    xor_process(buffer, strlen(buffer));
+
+    // 3. 發送 (這裡才真的把資料送出去)
+    send(sd, buffer, strlen(buffer), 0);
+}
 /* USER CODE END 0 */
 
 /**
@@ -154,6 +170,8 @@ int main() {
                     close(sd);
                     client_socket[i] = 0;
                 } else {
+                    // ★★★ 新增：Server 收到指令，先解密才能看懂！ ★★★
+                    xor_process(buffer, valread);
                     // 處理接收到的字串
                     buffer[strcspn(buffer, "\n")] = 0;
                     buffer[strcspn(buffer, "\r")] = 0;
@@ -253,7 +271,7 @@ int process_command(int sd, Player *current_player, char *buffer) {
         if (sscanf(buffer + 5, "%s", target_name) == 1) {
             handle_take(sd, current_player, target_name);
         } else {
-            send(sd, "Take what?\n", 11, 0);
+            send_encrypted(sd, "Take what?\n", 11, 0);
         }
     }
     // 5. 處理 丟東西 (DEPOSIT)
@@ -262,7 +280,7 @@ int process_command(int sd, Player *current_player, char *buffer) {
         if (sscanf(buffer + 8, "%s", target_name) == 1) {
             handle_deposit(sd, current_player, target_name);
         } else {
-            send(sd, "Deposit what?\n", 14, 0);
+            send_encrypted(sd, "Deposit what?\n", 14, 0);
         }
     }
     // 6. 處理 私訊 (TELL)
@@ -283,7 +301,7 @@ int process_command(int sd, Player *current_player, char *buffer) {
         if (sscanf(buffer + 6, "%s", username) == 1) {
             handle_login(sd, current_player, username);
         } else {
-            send(sd, "Usage: login <username>\n", 24, 0);
+            send_encrypted(sd, "Usage: login <username>\n", 24, 0);
         }
     }
     // 10. 處理 改名 (NAME)
@@ -298,7 +316,7 @@ int process_command(int sd, Player *current_player, char *buffer) {
         }
         
         // 2. 發送道別訊息
-        send(sd, "Goodbye!\n", 9, 0);
+        send_encrypted(sd, "Goodbye!\n", 9, 0);
         
         // 3. 雖然這裡是 Server，但我們可以主動讓 Client 感覺到結束
         // 實際上，使用者看到 Goodbye 後自己按 Ctrl+C 也是符合 "Exit" 流程的
@@ -308,7 +326,7 @@ int process_command(int sd, Player *current_player, char *buffer) {
     // 12. 未知指令
     else {
         char *msg = "Unknown command. Try 'look', 'north', 'take <item>', 'i'.\n";
-        send(sd, msg, strlen(msg), 0);
+        send_encrypted(sd, msg, strlen(msg), 0);
     }
     return 0; // 正常結束
 }
@@ -358,7 +376,7 @@ void handle_look(int sd, Player *current_player) {
     }
     strcat(response, "\n");
     
-    send(sd, response, strlen(response), 0);
+    send_encrypted(sd, response, strlen(response), 0);
 }
 
 void handle_move(int sd, Player *p, const char *direction) {
@@ -388,7 +406,7 @@ void handle_move(int sd, Player *p, const char *direction) {
        // 告訴自己
         char msg[64];
         sprintf(msg, "You moved %s.\n", direction);
-        send(sd, msg, strlen(msg), 0);
+        send_encrypted(sd, msg, strlen(msg), 0);
 
         // 移動後的廣播 (告訴新房間的人)
         sprintf(broadcast_msg, "\n[通知] %s entered the room.\n", p->name);
@@ -397,7 +415,7 @@ void handle_move(int sd, Player *p, const char *direction) {
         // 自動幫玩家看一眼新房間 (優化體驗)
         handle_look(sd, p); 
     } else {
-        send(sd, "You hit a wall!\n", 16, 0);
+        send_encrypted(sd, "You hit a wall!\n", 16, 0);
     }
 }
 
@@ -418,7 +436,7 @@ void handle_inventory(int sd, Player *current_player) {
             item = item->next;
         }
     }
-    send(sd, response, strlen(response), 0);
+    send_encrypted(sd, response, strlen(response), 0);
 }
 
 void handle_take(int sd, Player *current_player, char *target_name) {
@@ -448,9 +466,9 @@ void handle_take(int sd, Player *current_player, char *target_name) {
         current_player->backpack = curr;
         
         sprintf(response, "You took the %s.\n", curr->name);
-        send(sd, response, strlen(response), 0);
+        send_encrypted(sd, response, strlen(response), 0);
     } else {
-        send(sd, "You don't see that here.\n", 25, 0);
+        send_encrypted(sd, "You don't see that here.\n", 25, 0);
     }
 }
 
@@ -481,9 +499,9 @@ void handle_deposit(int sd, Player *current_player, char *target_name) {
         curr_room->ground_items = curr;
 
         sprintf(response, "You deposited the %s.\n", curr->name);
-        send(sd, response, strlen(response), 0);
+        send_encrypted(sd, response, strlen(response), 0);
     } else {
-        send(sd, "You don't have that in your backpack.\n", 38, 0);
+        send_encrypted(sd, "You don't have that in your backpack.\n", 38, 0);
     }
 }    
 
@@ -493,7 +511,7 @@ void broadcast_room(Player *sender, char *message) {
         // 1. 必須在同一個房間
         // 2. 不能是發送者自己 (sender)
         if (p->x == sender->x && p->y == sender->y && p->socket_fd != sender->socket_fd) {
-            send(p->socket_fd, message, strlen(message), 0);
+            send_encrypted(p->socket_fd, message, strlen(message), 0);
         }
         p = p->next;
     }
@@ -507,7 +525,7 @@ void handle_tell(int sd, Player *current_player, char *buffer) {
     // 注意：這裡稍微複雜一點，因為 message 可能包含空白
     //我們先讀取名字
     if (sscanf(buffer + 5, "%s", target_name) != 1) {
-        send(sd, "Usage: tell <player_name> <message>\n", 36, 0);
+        send_encrypted(sd, "Usage: tell <player_name> <message>\n", 36, 0);
         return;
     }
 
@@ -518,7 +536,7 @@ void handle_tell(int sd, Player *current_player, char *buffer) {
     while(*msg_start == ' ') msg_start++; // 跳過空白
 
     if (strlen(msg_start) == 0) {
-        send(sd, "Tell what?\n", 11, 0);
+        send_encrypted(sd, "Tell what?\n", 11, 0);
         return;
     }
 
@@ -530,9 +548,9 @@ void handle_tell(int sd, Player *current_player, char *buffer) {
             // 找到了！發送訊息
             char format_msg[BUFFER_SIZE];
             sprintf(format_msg, "\n[私訊] %s tells you: %s\n", current_player->name, msg_start);
-            send(p->socket_fd, format_msg, strlen(format_msg), 0);
+            send_encrypted(p->socket_fd, format_msg, strlen(format_msg), 0);
             
-            send(sd, "Message sent.\n", 14, 0);
+            send_encrypted(sd, "Message sent.\n", 14, 0);
             found = 1;
             break;
         }
@@ -540,7 +558,7 @@ void handle_tell(int sd, Player *current_player, char *buffer) {
     }
 
     if (!found) {
-        send(sd, "Player not found.\n", 18, 0);
+        send_encrypted(sd, "Player not found.\n", 18, 0);
     }
 }
 
@@ -550,7 +568,7 @@ void handle_give(int sd, Player *current_player, char *buffer) {
     
     // 解析指令： give <player> <item>
     if (sscanf(buffer + 5, "%s %s", target_name, item_name) != 2) {
-        send(sd, "Usage: give <player_name> <item_name>\n", 34, 0);
+        send_encrypted(sd, "Usage: give <player_name> <item_name>\n", 34, 0);
         return;
     }
 
@@ -568,7 +586,7 @@ void handle_give(int sd, Player *current_player, char *buffer) {
     }
 
     if (!found_player) {
-        send(sd, "Player not found or not in this room.\n", 34, 0);
+        send_encrypted(sd, "Player not found or not in this room.\n", 34, 0);
         return;
     }
 
@@ -599,13 +617,13 @@ void handle_give(int sd, Player *current_player, char *buffer) {
         // 4. 通知雙方
         char msg[BUFFER_SIZE];
         sprintf(msg, "You gave %s to %s.\n", item_name, target_name);
-        send(sd, msg, strlen(msg), 0);
+        send_encrypted(sd, msg, strlen(msg), 0);
 
         sprintf(msg, "%s gave you a %s.\n", current_player->name, item_name);
-        send(target->socket_fd, msg, strlen(msg), 0);
+        send_encrypted(target->socket_fd, msg, strlen(msg), 0);
 
     } else {
-        send(sd, "You don't have that item.\n", 24, 0);
+        send_encrypted(sd, "You don't have that item.\n", 24, 0);
     }
 }
 
@@ -617,7 +635,7 @@ void handle_save(int sd, Player *p) {
     
     FILE *fp = fopen(filename, "w");
     if (fp == NULL) {
-        send(sd, "System Error: Cannot create save file.\n", 36, 0);
+        send_encrypted(sd, "System Error: Cannot create save file.\n", 36, 0);
         return;
     }
 
@@ -635,7 +653,7 @@ void handle_save(int sd, Player *p) {
     
     char msg[BUFFER_SIZE];
     sprintf(msg, "Game saved to %s!\n", filename);
-    send(sd, msg, strlen(msg), 0);
+    send_encrypted(sd, msg, strlen(msg), 0);
 }
 
 /* 讀檔/登入功能：讀取檔案並恢復狀態 */
@@ -649,7 +667,7 @@ void handle_login(int sd, Player *p, char *username) {
         if (strcasecmp(iterator->name, username) == 0 && iterator->socket_fd != sd) {
             char error_msg[100];
             sprintf(error_msg, "Login Failed: The name '%s' is already online!\n", username);
-            send(sd, error_msg, strlen(error_msg), 0);
+            send_encrypted(sd, error_msg, strlen(error_msg), 0);
             return; // 直接踢掉，不准登入
         }
         iterator = iterator->next;
@@ -665,7 +683,7 @@ void handle_login(int sd, Player *p, char *username) {
         
         char msg[100];
         sprintf(msg, "Welcome, %s! (New Character Created)\n", username);
-        send(sd, msg, strlen(msg), 0);
+        send_encrypted(sd, msg, strlen(msg), 0);
         return;
     }
 
@@ -697,7 +715,7 @@ void handle_login(int sd, Player *p, char *username) {
 
     char msg[100];
     sprintf(msg, "Welcome back, %s! Data loaded.\n", username);
-    send(sd, msg, strlen(msg), 0);
+    send_encrypted(sd, msg, strlen(msg), 0);
     
     // 自動幫他看一下環境
     handle_look(sd, p);
@@ -748,7 +766,7 @@ void handle_name(int sd, Player *current_player, char *buffer) {
     
     // 解析指令: name <new_name>
     if (sscanf(buffer + 5, "%s", new_name) != 1) {
-        send(sd, "Usage: name <new_name>\n", 20, 0);
+        send_encrypted(sd, "Usage: name <new_name>\n", 20, 0);
         return;
     }
 
@@ -756,7 +774,7 @@ void handle_name(int sd, Player *current_player, char *buffer) {
     Player *p = player_list_head;
     while (p != NULL) {
         if (strcasecmp(p->name, new_name) == 0) {
-            send(sd, "Name already taken(Online).\n", 19, 0);
+            send_encrypted(sd, "Name already taken(Online).\n", 19, 0);
             return;
         }
         p = p->next;
@@ -771,7 +789,7 @@ void handle_name(int sd, Player *current_player, char *buffer) {
         // 讀得到檔案，代表這個名字已經被註冊過 (雖然他現在不在線上)
         fclose(fp);
         char *err_msg = "Name already registered (File exists). Please choose another.\n";
-        send(sd, err_msg, strlen(err_msg), 0);
+        send_encrypted(sd, err_msg, strlen(err_msg), 0);
         return; // 擋下來！保護老手資料
     }
     // 3. 改名
@@ -781,7 +799,7 @@ void handle_name(int sd, Player *current_player, char *buffer) {
 
     char msg[BUFFER_SIZE];
     sprintf(msg, "You changed your name to %s.\n", new_name);
-    send(sd, msg, strlen(msg), 0);
+    send_encrypted(sd, msg, strlen(msg), 0);
 
     // 4. 廣播告訴大家
     sprintf(msg, "\n[通知] %s is now known as %s.\n", old_name, new_name);
@@ -798,7 +816,7 @@ void handle_exit(int sd, Player *p) {
     // 2. 發送道別訊息
     char msg[64];
     sprintf(msg, "Goodbye, %s!\n", p->name);
-    send(sd, msg, strlen(msg), 0);
+    send_encrypted(sd, msg, strlen(msg), 0);
     
     // (注意：這裡不需要 close(sd)，因為 Server 回去迴圈後，
     //  若 Client 端收到 Goodbye 自行斷線，Server 會在 read() 讀到 0 時自動清理)
@@ -837,7 +855,10 @@ void init_map() {
 void create_player(int fd) {
     Player *p = (Player *)malloc(sizeof(Player));
     p->socket_fd = fd;
-    sprintf(p->name, "Guest%d", fd);  // 改成 Guest，避開衝突
+    
+    // 設定預設名稱
+    sprintf(p->name, "Guest%d", fd);
+    
     p->x = 0;
     p->y = 0;
     p->backpack = NULL;
@@ -846,6 +867,29 @@ void create_player(int fd) {
     player_list_head = p;
     
     printf("Created player for socket %d\n", fd);
+
+    // ★★★ 新增這段：歡迎訊息與操作教學 ★★★
+    char welcome_msg[512]; // 開大一點以免裝不下
+    sprintf(welcome_msg, 
+        "\n"
+        "========================================\n"
+        "      Welcome to the MUD Game!          \n"
+        "========================================\n"
+        "You are currently logged in as: %s\n"
+        "\n"
+        "[Register / Change Name]:\n"
+        "  Type 'name <your_name>' to create a new identity.\n"
+        "  (e.g., name Vincent)\n"
+        "\n"
+        "[Login]:\n"
+        "  Type 'login <username>' to load your saved data.\n"
+        "  (e.g., login Vincent)\n"
+        "\n"
+        "Type 'look' to see around.\n"
+        "========================================\n"
+        , p->name);
+
+    send_encrypted(fd, welcome_msg, strlen(welcome_msg), 0);
 }
 
 Player *find_player_by_fd(int fd) {

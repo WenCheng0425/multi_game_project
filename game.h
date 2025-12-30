@@ -31,7 +31,18 @@ typedef struct Room {
     Item *ground_items;    
 } Room;
 
-// 注意：如果你之後有 struct Player 或 struct GameState
-// 也要全部剪下貼過來這裡，這樣 Server 跟 Client 才會長得一樣
-
+// ==========================================
+// ★★★ 加密/解密函式 (放在這裡大家都能用) ★★★
+// ==========================================
+// 注意：一定要加 static，避免重複定義錯誤
+static void xor_process(char *data, int len) {
+    int key = 66; // 雙方約定好的密鑰 (改這裡，兩邊都會一起變，超方便)
+    
+    for (int i = 0; i < len; i++) {
+        // 排除換行符號和結尾符號，只加密內容
+        if (data[i] != '\0' && data[i] != '\n' && data[i] != '\r') {
+            data[i] = data[i] ^ key;
+        }
+    }
+}
 #endif
