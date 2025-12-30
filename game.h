@@ -17,6 +17,10 @@
 #define DISCOVERY_MSG "MUD_WHO" // Client 發出的尋人啟事
 #define DISCOVERY_RESP "MUD_HERE" // Server 回應的訊號
 
+// --- ★★★ 關鍵修改：更換加密金鑰 ★★★ ---
+// 使用 'K' (ASCII 75) 避免跟空白鍵 (32) 發生衝突
+#define XOR_KEY 'K'
+
 // --- 共用結構體 (Structs) ---
 // 注意順序：因為 Player 裡面有 Item，所以 Item 要放前面
 
@@ -37,18 +41,12 @@ typedef struct Room {
     Item *ground_items;    
 } Room;
 
-// ==========================================
-// ★★★ 加密/解密函式 (放在這裡大家都能用) ★★★
-// ==========================================
-// 注意：一定要加 static，避免重複定義錯誤
-static void xor_process(char *data, int len) {
-    int key = 66; // 雙方約定好的密鑰 (改這裡，兩邊都會一起變，超方便)
-    
+// 共用的加密函式
+// 確保兩個參數：字串指標、長度
+static void xor_process(char *msg, int len) {
+    if (msg == NULL) return;
     for (int i = 0; i < len; i++) {
-        // 排除換行符號和結尾符號，只加密內容
-        if (data[i] != '\0' && data[i] != '\n' && data[i] != '\r') {
-            data[i] = data[i] ^ key;
-        }
+        msg[i] ^= XOR_KEY;
     }
 }
 #endif

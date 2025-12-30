@@ -65,15 +65,19 @@ void send_encrypted(int sd, char *msg, int len, int flags) {
     // 安全檢查：如果是空的就不處理
     if (msg == NULL) return;
 
-    // 1. 複製字串 (這裡我們忽略傳進來的 len，直接用 strlen 比較保險)
+    // 1. ★關鍵★：在加密前先算出真正的長度並存起來
+    // 因為加密後的字元可能會變成 0 (Null)，如果之後才算 strlen 會變短
+    int original_len = strlen(msg);
+
+    // 2. 複製字串
     strncpy(buffer, msg, BUFFER_SIZE - 1);
-    buffer[BUFFER_SIZE - 1] = '\0'; // 確保結尾
+    // 確保不會溢位，但我們發送長度依照 original_len
+    
+    // 3. 加密 (使用原本的長度)
+    xor_process(buffer, original_len);
 
-    // 2. 加密
-    xor_process(buffer, strlen(buffer));
-
-    // 3. 發送 (這裡才真的把資料送出去)
-    send(sd, buffer, strlen(buffer), 0);
+    // 4. 發送 (使用原本的長度！)
+    send(sd, buffer, original_len, 0);
 }
 /* USER CODE END 0 */
 
@@ -92,7 +96,7 @@ int main() {
     fd_set readfds;
 
     int udp_socket;
-    
+
     // ★ 修改點 1：改用 sockaddr_storage 這個大容器，才能同時裝下 IPv4 或 IPv6
     struct sockaddr_storage address; 
     socklen_t addrlen;
