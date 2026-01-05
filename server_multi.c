@@ -35,7 +35,7 @@ void remove_player(int fd);
 Player *find_player_by_fd(int fd);
 int init_server_socket(int Port);
 int init_multicast_socket();
-void send_encrypted(int sd, char *msg, int len, int flags)
+void send_encrypted(int sd, char *msg, int len, int flags);
 
 // 遊戲邏輯 / Game Logic
 int process_command(int sd, Player *current_player, char *buffer);
@@ -233,6 +233,7 @@ int main() {
         /* 6. 處理客戶端訊息 (Handle Client IO) */
         for (int i = 0; i < MAX_CLIENTS; i++) {
             sd = client_socket[i];
+            char ip_str[INET6_ADDRSTRLEN];
 
             if (FD_ISSET(sd, &readfds)) {
                 memset(buffer, 0, BUFFER_SIZE); // Important: Clear buffer / 重要：清空 buffer
@@ -560,6 +561,29 @@ void handle_move(int sd, Player *p, const char *direction) {
 }
 
 /**
+ * @brief Handle Inventory / 處理背包查看
+ */
+void handle_inventory(int sd, Player *current_player) {
+    char response[BUFFER_SIZE];
+    memset(response, 0, BUFFER_SIZE);
+    
+    sprintf(response, "Your Backpack:\n");
+    Item *item = current_player->backpack;
+    
+    if (item == NULL) {
+        strcat(response, "  (Empty)\n");
+    } else {
+        while (item != NULL) {
+            strcat(response, "  - ");
+            strcat(response, item->name);
+            strcat(response, "\n");
+            item = item->next;
+        }
+    }
+    send_encrypted(sd, response, strlen(response), 0);
+}
+
+/**
  * @brief Handle Take Item / 處理撿取物品
  */
 void handle_take(int sd, Player *current_player, char *target_name) {
@@ -687,7 +711,7 @@ void handle_tell(int sd, Player *current_player, char *buffer) {
     }
 }
 
-v/**
+/**
  * @brief Handle Give Item / 處理給予物品
  */
 void handle_give(int sd, Player *current_player, char *buffer) {
@@ -1030,4 +1054,3 @@ Player *find_player_by_fd(int fd) {
     }
     return NULL;
 }
-

@@ -135,7 +135,7 @@ int main(int argc, char *argv[]) {
         serv_addr_v4.sin_port = htons(DEFAULT_PORT);
 
         // 轉換 IPv4 地址 / Convert IPv4 Address
-        if (inet_pton(AF_INET, target_ip, &serv_addr_v4.sin6_addr) <= 0) { 
+        if (inet_pton(AF_INET, target_ip, &serv_addr_v4.sin_addr) <= 0) { 
              // 這裡通常是 .sin_addr，但有些平台實作差異，為了保險起見我們再寫一次標準的
              if (inet_pton(AF_INET, target_ip, &serv_addr_v4.sin_addr) <= 0) {
                  printf("\nInvalid IPv4 address: %s \n", target_ip);
