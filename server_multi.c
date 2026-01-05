@@ -9,7 +9,7 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
-#include "game.h"       // <--- 新增這行！(它已經包含 stdio, stdlib, string, 以及 PORT 設定)
+#include "game.h"       
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -18,73 +18,89 @@
 #include <errno.h>
 
 /* Private define ------------------------------------------------------------*/
-// #define DEFAULT_IP "127.0.0.1"  // Server 其實不需要設 IP (它預設是聽所有來源 INADDR_ANY)，這行沒用到可刪
 #define MAX_CLIENTS 10
 
-/* Private typedef -----------------------------------------------------------*/
-// 都已經搬到 game.h 了
-/* Private variables ---------------------------------------------------------*/
+/* =========================================================================== */
+/* 1. 全域變數宣告 / Global Variables                       */
+/* =========================================================================== */
 Room map[MAP_SIZE][MAP_SIZE]; 
 Player *player_list_head = NULL;
 
 /* Private function prototypes -----------------------------------------------*/
+// 輔助與初始化 / Helpers & Initialization
 void add_item(Item **head, const char *name);
 void init_map(void);
 void create_player(int fd);
+void remove_player(int fd);
 Player *find_player_by_fd(int fd);
 int init_server_socket(int Port);
 int init_multicast_socket();
-int process_command(int sd, Player *current_player, char *buffer);
+void send_encrypted(int sd, char *msg, int len, int flags)
 
+// 遊戲邏輯 / Game Logic
+int process_command(int sd, Player *current_player, char *buffer);
 void handle_look(int sd, Player *current_player);
 void handle_move(int sd, Player *current_player, const char *direction);
 void handle_inventory(int sd, Player *current_player);
 void handle_take(int sd, Player *current_player, char *item_name);
 void handle_deposit(int sd, Player *current_player, char *item_name);
-
 void broadcast_room(Player *sender, char *message);
 void handle_tell(int sd, Player *current_player, char *buffer);
 void handle_give(int sd, Player *current_player, char *buffer);
-
 void handle_save(int sd, Player *p);
 void handle_login(int sd, Player *p, char *username);
-void remove_player(int fd);
 void handle_name(int sd, Player *current_player, char *buffer);
 void handle_exit(int sd, Player *p);
+
 /* USER CODE BEGIN 0 */
-// 輔助函式：新增物品到 Linked List 
+/**
+ * @brief 新增物品到鏈結串列 / Add item to linked list
+ * @param head Pointer to the head of the list (串列頭指標)
+ * @param name Name of the item (物品名稱)
+ */
 void add_item(Item **head, const char *name) {
     Item *new_item = (Item *)malloc(sizeof(Item));
     strcpy(new_item->name, name);
     new_item->next = *head;
     *head = new_item;
 }
+
+/**
+ * @brief 加密並發送訊息 / Encrypt and send message
+ * @param sd Socket descriptor (Socket 描述符)
+ * @param msg Message to be sent (欲發送的訊息)
+ * @param len Length of message (訊息長度)
+ * @param flags Send flags (發送標誌)
+ */
 void send_encrypted(int sd, char *msg, int len, int flags) {
     char buffer[BUFFER_SIZE];
     
+    // Safety check: Return immediately if message is NULL
     // 安全檢查：如果是空的就不處理
     if (msg == NULL) return;
 
-    // 1. ★關鍵★：在加密前先算出真正的長度並存起來
-    // 因為加密後的字元可能會變成 0 (Null)，如果之後才算 strlen 會變短
+    // Calculate and store original length before encryption
+    // 在加密前先算出真正的長度並存起來 (避免加密後出現 Null 導致 strlen 變短)
     int original_len = strlen(msg);
 
-    // 2. 複製字串
+    // Copy string to buffer
+    // 複製字串到緩衝區
     strncpy(buffer, msg, BUFFER_SIZE - 1);
-    // 確保不會溢位，但我們發送長度依照 original_len
+    buffer[BUFFER_SIZE - 1] = '\0'; // Ensure null-termination (確保結尾安全)
     
-    // 3. 加密 (使用原本的長度)
+    // Encrypt the buffer (using original length)
+    // 加密 (使用原本的長度)
     xor_process(buffer, original_len);
 
-    // 4. 發送 (使用原本的長度！)
+    // Send data (using original length)
+    // 發送資料 (使用原本的長度)
     send(sd, buffer, original_len, 0);
 }
 /* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
+/* ================================================================================== */
+/* 2. 主程式 / Main Function                                */
+/* ================================================================================== */
 int main() {
     /* 1. 初始化系統 (System Initialization) */
     init_map();
@@ -97,88 +113,79 @@ int main() {
 
     int udp_socket;
 
-    // ★ 修改點 1：改用 sockaddr_storage 這個大容器，才能同時裝下 IPv4 或 IPv6
+    // Use sockaddr_storage to hold both IPv4 and IPv6 structures
+    // 改用 sockaddr_storage 這個大容器，才能同時裝下 IPv4 或 IPv6
     struct sockaddr_storage address; 
     socklen_t addrlen;
-
-    // 初始化 client socket 陣列
+ 
+    // Initialize client socket array / 初始化 client socket 陣列
     for (int i = 0; i < MAX_CLIENTS; i++) {
         client_socket[i] = 0;
     }
 
     /* 3. 啟動伺服器 (Start Server) */
-    // 我們把 socket, bind, listen 全部封裝進去了
     master_socket = init_server_socket(DEFAULT_PORT);
 
-    // ★ 新增：啟動 UDP Server (搜尋用)
+    // Start UDP Server for Discovery / 啟動 UDP Server (搜尋用)
     udp_socket = init_multicast_socket();
     if (udp_socket < 0) {
         printf("Multicast init failed, auto-discovery disabled.\n");
     }
 
-    // ★ 修改點 2：這裡不需要再手動填寫 IPv4 資訊 (如 sin_family = AF_INET...)
-    // 因為 accept 會自動幫我們填入連線者的資訊，我們只要重置長度就好
     addrlen = sizeof(address);
 
-    /* IPv4 範例使用 (已註解)
-    // 為了 accept 需要重新賦值 address 結構
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(DEFAULT_PORT);
-    addrlen = sizeof(address);
-    */
     printf("========================================\n");
-    printf(" 遊戲伺服器已啟動 (Game Server Started) \n");
-    printf(" 監聽 Port: %d\n", DEFAULT_PORT);
-    printf(" 可接受連線來源: 本機 (127.0.0.1) 或 區網 IP\n");
+    printf(" Game Server Started \n");
+    printf(" Listening on Port: %d\n", DEFAULT_PORT);
+    printf(" Accepting connections from: Localhost or LAN IP\n");
     printf("========================================\n");
 
     /* 4. 主迴圈 (Infinite Loop) */
     while (1) {
-        // 清空並重新設定 File Descriptor Set
+        // Clear and reset File Descriptor Set / 清空並重新設定 File Descriptor Set
         FD_ZERO(&readfds);
 
-        // 加入 TCP Master Socket
+        // Add TCP Master Socket / 加入 TCP Master Socket
         FD_SET(master_socket, &readfds);
         max_sd = master_socket;
 
-        // ★ 新增：加入 UDP Socket 到監聽列表
+        // Add UDP Socket to monitoring list / 加入 UDP Socket 到監聽列表
         if (udp_socket > 0) {
             FD_SET(udp_socket, &readfds);
             if (udp_socket > max_sd) max_sd = udp_socket;
         }
 
-        // 加入所有連線中的 client
+        // Add all connected clients / 加入所有連線中的 client
         for (int i = 0; i < MAX_CLIENTS; i++) {
             sd = client_socket[i];
             if (sd > 0) FD_SET(sd, &readfds);
             if (sd > max_sd) max_sd = sd;
         }
 
-        // 等待活動 (Wait for activity)
+        // Wait for activity / 等待活動
         activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
 
         if ((activity < 0) && (errno != EINTR)) {
             printf("select error\n");
         }
         // --------------------------------------------------
-        // ★ 新增：處理 UDP Multicast 請求 (有人在找 Server 嗎？)
+        // ★Handle UDP Multicast Request / 處理 UDP Multicast 請求 (是否有人在找 Server？)
         // --------------------------------------------------
         if (udp_socket > 0 && FD_ISSET(udp_socket, &readfds)) {
             char udp_buf[128];
             struct sockaddr_in client_addr;
             socklen_t client_len = sizeof(client_addr);
             
-            // 接收 UDP 封包
+            // Receive UDP packet / 接收 UDP 封包
             int n = recvfrom(udp_socket, udp_buf, sizeof(udp_buf), 0, 
                            (struct sockaddr*)&client_addr, &client_len);
             if (n > 0) {
                 udp_buf[n] = '\0';
-                // 如果通關密語正確
+                // If passphrase is correct / 如果通關密語正確
                 if (strcmp(udp_buf, DISCOVERY_MSG) == 0) {
                     printf("[Discovery] Client searching from %s\n", inet_ntoa(client_addr.sin_addr));
                     
-                    // 回覆：我在這！
+                    // Reply: I am here! / 回覆：我在這！
                     sendto(udp_socket, DISCOVERY_RESP, strlen(DISCOVERY_RESP), 0,
                            (struct sockaddr*)&client_addr, client_len);
                 }
@@ -187,14 +194,14 @@ int main() {
 
         /* 5. 處理新連線 (Handle New Connection) */
         if (FD_ISSET(master_socket, &readfds)) {
-            // ★ 修改點 3：accept 使用通用結構 & 指標轉型
+            // Use generic structure & pointer casting for accept / accept 使用通用結構 & 指標轉型
             addrlen = sizeof(address);
             if ((new_socket = accept(master_socket, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
                 perror("accept");
                 exit(EXIT_FAILURE);
             }
-            // ★ 修改點 4：判斷是 v4 還是 v6 並顯示正確 IP
-            char ip_str[INET6_ADDRSTRLEN]; // 準備一個夠長的字串陣列
+            // ★ Check if v4 or v6 and display correct IP / 判斷是 v4 還是 v6 並顯示正確 IP
+            char ip_str[INET6_ADDRSTRLEN]; 
             int port = 0;
 
             if (address.ss_family == AF_INET) {
@@ -209,12 +216,12 @@ int main() {
                 inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
             }
 
-            printf("[新連線] Socket fd: %d, IP: %s, Port: %d\n", new_socket, ip_str, port);
+            printf("[New Connection] Socket fd: %d, IP: %s, Port: %d\n", new_socket, ip_str, port);
 
-            // 創建遊戲角色
+            // Create player character / 創建遊戲角色
             create_player(new_socket);
 
-            // 加入 socket 陣列
+            // Add to socket array / 加入 socket 陣列
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (client_socket[i] == 0) {
                     client_socket[i] = new_socket;
@@ -228,12 +235,11 @@ int main() {
             sd = client_socket[i];
 
             if (FD_ISSET(sd, &readfds)) {
-                memset(buffer, 0, BUFFER_SIZE); // 重要：清空 buffer
+                memset(buffer, 0, BUFFER_SIZE); // Important: Clear buffer / 重要：清空 buffer
                 valread = read(sd, buffer, BUFFER_SIZE);
 
                 if (valread <= 0) {
-                    // 斷線處理
-                    // ★ 修改點 5：斷線顯示也要支援 IPv6 (不然會亂碼)
+                    // // Handle disconnection / 斷線處理
                     getpeername(sd, (struct sockaddr*)&address, &addrlen);
                     
                     char ip_str[INET6_ADDRSTRLEN];
@@ -244,37 +250,37 @@ int main() {
                         struct sockaddr_in6 *s = (struct sockaddr_in6 *)&address;
                         inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
                     }
-                    printf("[斷線] Host disconnected, fd %d, IP %s\n", sd, ip_str);
-                    remove_player(sd); // 移除玩家
+                    printf("[Disconnected] Host disconnected, fd %d, IP %s\n", sd, ip_str);
+                    remove_player(sd); // Remove player / 移除玩家
                     close(sd);
                     client_socket[i] = 0;
                 } else {
-                    // ★★★ 新增：Server 收到指令，先解密才能看懂！ ★★★
+                    // Decrypt received command from ClientServer / 收到指令，先解密才能看懂
                     xor_process(buffer, valread);
-                    // 處理接收到的字串
+                    // Process received string / 處理接收到的字串
                     buffer[strcspn(buffer, "\n")] = 0;
                     buffer[strcspn(buffer, "\r")] = 0;
 
                     if (strlen(buffer) > 0) {
                         printf("Client %d says: %s\n", sd, buffer);
                         
-                        // 1. 找到發送訊息的玩家
+                        // Find the player sending the message / 找到發送訊息的玩家
                         Player *current_player = find_player_by_fd(sd);
                         
                         if (current_player) {
-                            // 2. ★ 關鍵修改：接收 process_command 的回傳值 (int) ★
+                            // Process command / 處理指令
                             int status = process_command(sd, current_player, buffer);
 
-                            printf("[Debug] process_command returned: %d\n", status); 
+                            // printf("[Debug] process_command returned: %d\n", status); 
 
-                            // 3. ★ 檢查回傳值：如果是 1，代表玩家輸入了 exit ★
+                            // Check if exit is requested / 檢查是否要離開
                             if (status == 1) {
                                 getpeername(sd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
-                                printf("[斷線] Client requested exit, fd %d\n", sd);
+                                printf("[Disconnected] Host disconnected, fd %d, IP %s\n", sd, ip_str);
                                 
-                                remove_player(sd); // 存檔並移除
-                                close(sd);         // 關閉 Socket
-                                client_socket[i] = 0; // 清除陣列
+                                remove_player(sd);    // Save and remove / 存檔並移除
+                                close(sd);            // Close Socket / 關閉 Socket
+                                client_socket[i] = 0; // Clear array / 清除陣列
                             }
                         }
                     }
@@ -285,49 +291,50 @@ int main() {
     return 0;
 }
 
-/* User Code Implementation --------------------------------------------------*/
+/* ================================================================================== */
+/* 3. 網路初始化 / Network Initialization                   */
+/* ================================================================================== */
 
 /**
-  * @brief 初始化 Socket、Bind 和 Listen
+  * @brief Initialize TCP Socket (IPv4/IPv6 Dual Stack)
+  * 初始化 TCP Socket (支援 IPv4/IPv6 雙堆疊)
   */
 int init_server_socket(int port) {
     int master_socket;
-    struct sockaddr_in6 address; // ★ 改用 IPv6 結構
+    struct sockaddr_in6 address; // ★ Use IPv6 structure / 改用 IPv6 結構
     int opt = 1;
     int no = 0;
 
-    // 1. 建立 IPv6 Socket (AF_INET6)
+    // 1. Create IPv6 Socket / 建立 IPv6 Socket
     if ((master_socket = socket(AF_INET6, SOCK_STREAM, 0)) == 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
 
-    // 2. 設定 Socket 選項：允許 Port 重用
+    // 2. Set Socket Options: Allow Port Reuse / 設定 Socket 選項：允許 Port 重用
     if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
         perror("setsockopt reuseaddr");
         exit(EXIT_FAILURE);
     }
 
-    // 3. ★ 關鍵步驟：開啟 Dual Stack (讓 IPv6 Socket 也能收 IPv4)
-    // IPV6_V6ONLY = 0 代表「不只」收 v6，也要收 v4
+    // 3. Enable Dual Stack (Receive both IPv4 and IPv6) / 開啟 Dual Stack
     if (setsockopt(master_socket, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&no, sizeof(no)) < 0) {
         perror("setsockopt v6only");
         exit(EXIT_FAILURE);
     }
 
-    // 4. Bind (綁定位址)
+    // 4. Bind Address / 綁定位址
     memset(&address, 0, sizeof(address));
     address.sin6_family = AF_INET6;
-    address.sin6_addr = in6addr_any; // ★ 相當於 IPv4 的 INADDR_ANY，但這是 IPv6 版
+    address.sin6_addr = in6addr_any; // ★ Any address (IPv4/IPv6) / 任意位址
     address.sin6_port = htons(port);
     
-    // 注意轉型成 (struct sockaddr *)
     if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
 
-    // 5. Listen
+    // 5. Listen / 監聽
     if (listen(master_socket, 3) < 0) {
         perror("listen");
         exit(EXIT_FAILURE);
@@ -336,27 +343,30 @@ int init_server_socket(int port) {
     return master_socket;
 }
 
-/* 初始化 UDP Multicast Socket */
+/**
+  * @brief Initialize UDP Multicast Socket (For Auto Discovery)
+  * 初始化 UDP Multicast Socket (用於自動搜尋)
+  */
 int init_multicast_socket() {
     int sock;
     struct sockaddr_in addr;
     struct ip_mreq mreq;
     int reuse = 1;
 
-    // 1. 建立 UDP Socket
+    // 1. Create UDP Socket / 建立 UDP Socket
     if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         perror("Multicast socket creation failed");
         return -1;
     }
 
-    // 2. 允許 Port 重用 (避免重開 Server 時被卡住)
+    // 2. Allow Port Reuse / 允許 Port 重用
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse)) < 0) {
         perror("Setting SO_REUSEADDR error");
         close(sock);
         return -1;
     }
 
-    // 3. 綁定到 Multicast Port (8888)
+    // 3. Bind to Multicast Port / 綁定到 Multicast Port (8888)
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY); 
@@ -368,7 +378,7 @@ int init_multicast_socket() {
         return -1;
     }
 
-    // 4. 加入多播群組 (239.0.0.1)
+    // 4. Join Multicast Group / 加入多播群組 (239.0.0.1)
     mreq.imr_multiaddr.s_addr = inet_addr(MCAST_GRP);
     mreq.imr_interface.s_addr = htonl(INADDR_ANY);
     if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) < 0) {
@@ -381,34 +391,37 @@ int init_multicast_socket() {
     return sock;
 }
 
+/* ================================================================================== */
+/* 4. 遊戲核心邏輯 / Game Core Logic                        */
+/* ================================================================================== */
+
 /**
-  * @brief 處理遊戲核心邏輯 (移動、查看、撿取)
+  * @brief Parse and process commands / 解析並處理玩家指令
   */
 int process_command(int sd, Player *current_player, char *buffer) {
-    // 1. 處理 LOOK
+    // 1. LOOK
     if (strncmp(buffer, "look", 4) == 0) {
         handle_look(sd, current_player);
     }
-    // 2. 處理 移動 (統一交給 handle_move)
+    // 2. MOVE (North, South, East, West)
     else if (strncmp(buffer, "north", 5) == 0) handle_move(sd, current_player, "North");
     else if (strncmp(buffer, "south", 5) == 0) handle_move(sd, current_player, "South");
     else if (strncmp(buffer, "east", 4) == 0)  handle_move(sd, current_player, "East");
     else if (strncmp(buffer, "west", 4) == 0)  handle_move(sd, current_player, "West");
-    // 3. 處理 背包 (Inventory)
+    // 3. INVENTORY
     else if (strncmp(buffer, "inventory", 9) == 0 || strncmp(buffer, "i", 1) == 0) {
         handle_inventory(sd, current_player);
     }
-    // 4. 處理 撿東西 (TAKE)
+    // 4. TAKE
     else if (strncmp(buffer, "take", 4) == 0) {
         char target_name[MAX_NAME];
-        // 檢查有沒有輸入物品名稱
         if (sscanf(buffer + 5, "%s", target_name) == 1) {
             handle_take(sd, current_player, target_name);
         } else {
             send_encrypted(sd, "Take what?\n", 11, 0);
         }
     }
-    // 5. 處理 丟東西 (DEPOSIT)
+    // 5. DEPOSIT
     else if (strncmp(buffer, "deposit", 7) == 0) {
         char target_name[MAX_NAME];
         if (sscanf(buffer + 8, "%s", target_name) == 1) {
@@ -417,19 +430,19 @@ int process_command(int sd, Player *current_player, char *buffer) {
             send_encrypted(sd, "Deposit what?\n", 14, 0);
         }
     }
-    // 6. 處理 私訊 (TELL)
+    // 6. TELL (Private Message)
     else if (strncmp(buffer, "tell", 4) == 0) {
         handle_tell(sd, current_player, buffer);
     }
-    // 7. 處理 交付物品 (GIVE)
+    // 7. GIVE
     else if (strncmp(buffer, "give", 4) == 0) {
-    handle_give(sd, current_player, buffer);
+        handle_give(sd, current_player, buffer);
     }
-    // 8. 處理 存檔 (SAVE)
+    // 8. SAVE
     else if (strncmp(buffer, "save", 4) == 0) {
         handle_save(sd, current_player);
     }
-    // 9. 處理 登入 (LOGIN)
+    // 9. LOGIN
     else if (strncmp(buffer, "login", 5) == 0) {
         char username[MAX_NAME];
         if (sscanf(buffer + 6, "%s", username) == 1) {
@@ -438,50 +451,41 @@ int process_command(int sd, Player *current_player, char *buffer) {
             send_encrypted(sd, "Usage: login <username>\n", 24, 0);
         }
     }
-    // 10. 處理 改名 (NAME)
+    // 10. NAME (Change Name/Register)
     else if (strncmp(buffer, "name", 4) == 0) {
         handle_name(sd, current_player, buffer);
     }
-    // 11. 處理 離開 (EXIT)
+    // 11. EXIT
     else if (strncmp(buffer, "exit", 4) == 0) {
-        // 1. 自動存檔 (如果是正式玩家)
         if (strncmp(current_player->name, "Guest", 5) != 0) {
-            handle_save(sd, current_player); // 重用你的存檔功能
+            handle_save(sd, current_player); 
         }
-        
-        // 2. 發送道別訊息
         send_encrypted(sd, "Goodbye!\n", 9, 0);
-        
-        // 3. 雖然這裡是 Server，但我們可以主動讓 Client 感覺到結束
-        // 實際上，使用者看到 Goodbye 後自己按 Ctrl+C 也是符合 "Exit" 流程的
-        // 如果要做到 Server 主動踢人，需要改變函式回傳值，這改動太大，先這樣就好。
-        return 1; // 告訴 main：這個人要斷線了！
+        return 1; // Return 1 to disconnect / 回傳 1 表示要斷線
     }
-    // 12. 未知指令
+    // 12. Unknown Command
     else {
         char *msg = "Unknown command. Try 'look', 'north', 'take <item>', 'i'.\n";
         send_encrypted(sd, msg, strlen(msg), 0);
     }
-    return 0; // 正常結束
+    return 0; // Continue / 正常結束
 }
 
-/* ========================================================== */
-/* 功能獨立函式          */
-/* ========================================================== */
-
+/**
+ * @brief Handle Look Command / 處理查看指令
+ */
 void handle_look(int sd, Player *current_player) {
     char response[BUFFER_SIZE];
     char temp[100];
     memset(response, 0, BUFFER_SIZE);
 
-    // 1. 顯示 Location
+    // 1. Show Location
     sprintf(response, "\nLocation: %d %d\n", current_player->x, current_player->y);
 
-    // 2. 顯示 Player(s)
+    // 2. Show Player(s)
     strcat(response, "Player(s):");
     Player *p = player_list_head; 
     while (p != NULL) {
-        // 檢查是否在同一個房間
         if (p->x == current_player->x && p->y == current_player->y) {
             if (p->socket_fd == sd) {
                 sprintf(temp, " %s(Me)", p->name);
@@ -494,7 +498,7 @@ void handle_look(int sd, Player *current_player) {
     }
     strcat(response, "\n");
 
-    // 3. 顯示 Item(s)
+    // 3. Show Item(s)
     strcat(response, "Item(s):");
     Room *curr_room = &map[current_player->x][current_player->y];
     Item *item = curr_room->ground_items;
@@ -513,15 +517,18 @@ void handle_look(int sd, Player *current_player) {
     send_encrypted(sd, response, strlen(response), 0);
 }
 
+/**
+ * @brief Handle Move Command / 處理移動指令
+ */
 void handle_move(int sd, Player *p, const char *direction) {
     int moved = 0;
     char broadcast_msg[100];
 
-    // 移動前的廣播 (告訴舊房間的人)
-    sprintf(broadcast_msg, "\n[通知] %s left going %s.\n", p->name, direction);
+    // Broadcast before moving / 移動前的廣播
+    sprintf(broadcast_msg, "\n[Notification] %s left going %s.\n", p->name, direction);
     broadcast_room(p, broadcast_msg);
 
-    // 判斷方向與邊界檢查
+    // Boundary Check / 邊界檢查
     if (strcmp(direction, "North") == 0) {
         if (p->y > 0) { p->y--; moved = 1; }
     } 
@@ -535,44 +542,26 @@ void handle_move(int sd, Player *p, const char *direction) {
         if (p->x > 0) { p->x--; moved = 1; }
     }
 
-    // 回覆訊息
+    // Response / 回覆訊息
     if (moved) {
-       // 告訴自己
         char msg[64];
         sprintf(msg, "You moved %s.\n", direction);
         send_encrypted(sd, msg, strlen(msg), 0);
 
-        // 移動後的廣播 (告訴新房間的人)
-        sprintf(broadcast_msg, "\n[通知] %s entered the room.\n", p->name);
+        // Broadcast after moving / 移動後的廣播
+        sprintf(broadcast_msg, "\n[Notification] %s entered the room.\n", p->name);
         broadcast_room(p, broadcast_msg);
 
-        // 自動幫玩家看一眼新房間 (優化體驗)
+        // Auto Look / 自動查看新房間
         handle_look(sd, p); 
     } else {
         send_encrypted(sd, "You hit a wall!\n", 16, 0);
     }
 }
 
-void handle_inventory(int sd, Player *current_player) {
-    char response[BUFFER_SIZE];
-    memset(response, 0, BUFFER_SIZE);
-    
-    sprintf(response, "Your Backpack:\n");
-    Item *item = current_player->backpack;
-    
-    if (item == NULL) {
-        strcat(response, "  (Empty)\n");
-    } else {
-        while (item != NULL) {
-            strcat(response, "  - ");
-            strcat(response, item->name);
-            strcat(response, "\n");
-            item = item->next;
-        }
-    }
-    send_encrypted(sd, response, strlen(response), 0);
-}
-
+/**
+ * @brief Handle Take Item / 處理撿取物品
+ */
 void handle_take(int sd, Player *current_player, char *target_name) {
     char response[BUFFER_SIZE];
     Room *curr_room = &map[current_player->x][current_player->y];
@@ -580,7 +569,7 @@ void handle_take(int sd, Player *current_player, char *target_name) {
     Item *prev = NULL;
     int found = 0;
     
-    // 在地上找東西
+    // Find item on ground / 在地上找東西
     while (curr != NULL) {
         if (strcasecmp(curr->name, target_name) == 0) { 
             found = 1; 
@@ -591,11 +580,11 @@ void handle_take(int sd, Player *current_player, char *target_name) {
     }
 
     if (found) {
-        // 從地上移除
+        // Remove from ground / 從地上移除
         if (prev == NULL) curr_room->ground_items = curr->next;
         else prev->next = curr->next;
 
-        // 加到背包 (頭插法)
+        // Add to backpack / 加到背包
         curr->next = current_player->backpack;
         current_player->backpack = curr;
         
@@ -606,13 +595,16 @@ void handle_take(int sd, Player *current_player, char *target_name) {
     }
 }
 
+/**
+ * @brief Handle Deposit Item / 處理丟棄物品
+ */
 void handle_deposit(int sd, Player *current_player, char *target_name) {
     char response[BUFFER_SIZE];
     Item *curr = current_player->backpack;
     Item *prev = NULL;
     int found = 0;
 
-    // 在背包找東西
+    // Find item in backpack / 在背包找東西
     while (curr != NULL) {
         if (strcasecmp(curr->name, target_name) == 0) {
             found = 1;
@@ -623,11 +615,11 @@ void handle_deposit(int sd, Player *current_player, char *target_name) {
     }
 
     if (found) {
-        // 從背包移除
+        // Remove from backpack / 從背包移除
         if (prev == NULL) current_player->backpack = curr->next;
         else prev->next = curr->next;
 
-        // 加到地上 (頭插法)
+        // Add to ground / 加到地上
         Room *curr_room = &map[current_player->x][current_player->y];
         curr->next = curr_room->ground_items;
         curr_room->ground_items = curr;
@@ -637,13 +629,17 @@ void handle_deposit(int sd, Player *current_player, char *target_name) {
     } else {
         send_encrypted(sd, "You don't have that in your backpack.\n", 38, 0);
     }
-}    
+}  
 
+/**
+ * @brief Broadcast message to other players in the same room
+ * 廣播訊息給同房間的其他人
+ */
 void broadcast_room(Player *sender, char *message) {
     Player *p = player_list_head;
     while (p != NULL) {
-        // 1. 必須在同一個房間
-        // 2. 不能是發送者自己 (sender)
+        // 1. Same room / 必須在同一個房間
+        // 2. Not the sender / 不能是發送者自己
         if (p->x == sender->x && p->y == sender->y && p->socket_fd != sender->socket_fd) {
             send_encrypted(p->socket_fd, message, strlen(message), 0);
         }
@@ -651,37 +647,32 @@ void broadcast_room(Player *sender, char *message) {
     }
 }
 
+/**
+ * @brief Handle Tell (Private Message) / 處理私訊
+ */
 void handle_tell(int sd, Player *current_player, char *buffer) {
     char target_name[MAX_NAME];
-    char message[BUFFER_SIZE];
     
-    // 解析指令： tell <name> <message...>
-    // 注意：這裡稍微複雜一點，因為 message 可能包含空白
-    //我們先讀取名字
+    // format: tell <name> <message...>
     if (sscanf(buffer + 5, "%s", target_name) != 1) {
         send_encrypted(sd, "Usage: tell <player_name> <message>\n", 36, 0);
         return;
     }
 
-    // 接著尋找訊息開始的位置
-    // buffer + 5 是跳過 "tell "
-    // 然後我們要跳過 target_name 的長度，再跳過中間的空白
     char *msg_start = buffer + 5 + strlen(target_name);
-    while(*msg_start == ' ') msg_start++; // 跳過空白
+    while(*msg_start == ' ') msg_start++; 
 
     if (strlen(msg_start) == 0) {
         send_encrypted(sd, "Tell what?\n", 11, 0);
         return;
     }
 
-    // 尋找目標玩家
     Player *p = player_list_head;
     int found = 0;
     while (p != NULL) {
         if (strcmp(p->name, target_name) == 0) {
-            // 找到了！發送訊息
             char format_msg[BUFFER_SIZE];
-            sprintf(format_msg, "\n[私訊] %s tells you: %s\n", current_player->name, msg_start);
+            sprintf(format_msg, "\n[Private] %s tells you: %s\n", current_player->name, msg_start);
             send_encrypted(p->socket_fd, format_msg, strlen(format_msg), 0);
             
             send_encrypted(sd, "Message sent.\n", 14, 0);
@@ -696,17 +687,20 @@ void handle_tell(int sd, Player *current_player, char *buffer) {
     }
 }
 
+v/**
+ * @brief Handle Give Item / 處理給予物品
+ */
 void handle_give(int sd, Player *current_player, char *buffer) {
     char target_name[MAX_NAME];
     char item_name[MAX_NAME];
     
-    // 解析指令： give <player> <item>
+    // format: give <player> <item>
     if (sscanf(buffer + 5, "%s %s", target_name, item_name) != 2) {
         send_encrypted(sd, "Usage: give <player_name> <item_name>\n", 34, 0);
         return;
     }
 
-    // 1. 找玩家 (必須在同一個房間)
+    // 1. Find Player (Must be in same room) / 找玩家
     Player *target = player_list_head;
     int found_player = 0;
     while (target != NULL) {
@@ -724,7 +718,7 @@ void handle_give(int sd, Player *current_player, char *buffer) {
         return;
     }
 
-    // 2. 找物品 (必須在我的背包裡)
+    // 2. Find Item (Must be in backpack) / 找物品
     Item *curr = current_player->backpack;
     Item *prev = NULL;
     int found_item = 0;
@@ -739,16 +733,14 @@ void handle_give(int sd, Player *current_player, char *buffer) {
     }
 
     if (found_item) {
-        // 3. 轉移物品
-        // (A) 從我的背包移除
+        // 3. Transfer Item / 轉移物品
         if (prev == NULL) current_player->backpack = curr->next;
         else prev->next = curr->next;
 
-        // (B) 加到對方的背包 (頭插法)
         curr->next = target->backpack;
         target->backpack = curr;
 
-        // 4. 通知雙方
+        // 4. Notify both / 通知雙方
         char msg[BUFFER_SIZE];
         sprintf(msg, "You gave %s to %s.\n", item_name, target_name);
         send_encrypted(sd, msg, strlen(msg), 0);
@@ -761,7 +753,13 @@ void handle_give(int sd, Player *current_player, char *buffer) {
     }
 }
 
-/* 存檔功能：把玩家資料寫入檔案 */
+/* ================================================================================== */
+/* 5. 玩家管理與輔助工具 / Player Management & Utils        */
+/* ================================================================================== */
+
+/**
+ * @brief Save Game / 玩家存檔
+ */
 void handle_save(int sd, Player *p) {
     char filename[64];
     // 檔名用玩家名字命名，例如 "Vincent.dat"
@@ -790,19 +788,18 @@ void handle_save(int sd, Player *p) {
     send_encrypted(sd, msg, strlen(msg), 0);
 }
 
-/* 讀檔/登入功能：讀取檔案並恢復狀態 */
+/**
+ * @brief Login (Load Game) / 玩家登入
+ */
 void handle_login(int sd, Player *p, char *username) {
-    // 檢查是否已經有人用這個名字在線上了
+    // Check duplicate login / 檢查重複登入
     Player *iterator = player_list_head;
     while (iterator != NULL) {
-        // 檢查規則：
-        // 1. 名字跟我想登入的 username 一樣
-        // 2. 那個人不是我自己 (避免自己登入自己時報錯)
         if (strcasecmp(iterator->name, username) == 0 && iterator->socket_fd != sd) {
             char error_msg[100];
             sprintf(error_msg, "Login Failed: The name '%s' is already online!\n", username);
             send_encrypted(sd, error_msg, strlen(error_msg), 0);
-            return; // 直接踢掉，不准登入
+            return; 
         }
         iterator = iterator->next;
     }
@@ -812,33 +809,28 @@ void handle_login(int sd, Player *p, char *username) {
 
     FILE *fp = fopen(filename, "r");
     if (fp == NULL) {
-        // 檔案不存在 -> 代表是新玩家，直接改名就好
-        strcpy(p->name, username); // 改名
-        
+        // New player, change name directly / 新玩家，直接改名
+        strcpy(p->name, username);
         char msg[100];
         sprintf(msg, "Welcome, %s! (New Character Created)\n", username);
         send_encrypted(sd, msg, strlen(msg), 0);
         return;
     }
 
-    // 檔案存在 -> 開始讀取
     printf("Loading data for %s...\n", username);
 
-    // 1. 更新名字
+    // 1. Update Name
     strcpy(p->name, username);
 
-    // 2. 讀取座標
+    // 2. Load Coordinates
     fscanf(fp, "%d %d", &p->x, &p->y);
 
-    // 3. 清空目前背包 (避免重複)
-    // (簡單寫法：直接把頭指針丟掉，雖然會 Memory Leak 但新手暫時不管)
+    // 3. Clear Backpack
     p->backpack = NULL; 
 
-    // 4. 讀取背包物品
+    // 4. Load Items
     char item_name[MAX_NAME];
     while (fscanf(fp, "%s", item_name) != EOF) {
-        // 重用我們寫好的 add_item 邏輯，但這裡是加到背包
-        // 這裡手動做一個簡單的頭插法
         Item *new_item = (Item *)malloc(sizeof(Item));
         strcpy(new_item->name, item_name);
         new_item->next = p->backpack;
@@ -851,24 +843,24 @@ void handle_login(int sd, Player *p, char *username) {
     sprintf(msg, "Welcome back, %s! Data loaded.\n", username);
     send_encrypted(sd, msg, strlen(msg), 0);
     
-    // 自動幫他看一下環境
     handle_look(sd, p);
 }
-/* 移除玩家：當斷線時，把他在 Linked List 中的資料刪除 */
+
+/**
+ * @brief Remove Player (Disconnection) / 移除玩家 (斷線處理)
+ */
 void remove_player(int fd) {
     Player *curr = player_list_head;
     Player *prev = NULL;
 
     while (curr != NULL) {
         if (curr->socket_fd == fd) {
-            // 找到了，準備移除
-            
-            // 1. 如果他在房間裡，通知大家他走了 (選做)
+            // Broadcast Disconnection / 廣播離開訊息
             char msg[100];
-            sprintf(msg, "\n[通知] %s disconnected.\n", curr->name);
+            sprintf(msg, "\n[Notification] %s disconnected.\n", curr->name);
             broadcast_room(curr, msg);
 
-            // 2. 釋放背包記憶體 (避免 Memory Leak)
+            // Free Backpack / 釋放背包
             Item *item = curr->backpack;
             while (item != NULL) {
                 Item *temp = item;
@@ -876,16 +868,13 @@ void remove_player(int fd) {
                 free(temp);
             }
 
-            // 3. 從鏈結串列中移除
+            // Remove Node / 移除節點
             if (prev == NULL) {
-                // 如果是頭節點
                 player_list_head = curr->next;
             } else {
-                // 如果是中間節點
                 prev->next = curr->next;
             }
 
-            // 4. 釋放玩家記憶體
             free(curr);
             printf("Player with fd %d removed.\n", fd);
             return;
@@ -895,16 +884,19 @@ void remove_player(int fd) {
     }
 }
 
+/**
+ * @brief Change Name (Register) / 玩家改名 (註冊)
+ */
 void handle_name(int sd, Player *current_player, char *buffer) {
     char new_name[MAX_NAME];
     
-    // 解析指令: name <new_name>
+    // name <new_name>
     if (sscanf(buffer + 5, "%s", new_name) != 1) {
         send_encrypted(sd, "Usage: name <new_name>\n", 20, 0);
         return;
     }
 
-    // 1. 檢查【線上】名字是否被佔用 (不分大小寫)
+    // Check Online Names / 檢查線上名字
     Player *p = player_list_head;
     while (p != NULL) {
         if (strcasecmp(p->name, new_name) == 0) {
@@ -914,19 +906,18 @@ void handle_name(int sd, Player *current_player, char *buffer) {
         p = p->next;
     }
 
-    // 2. 檢查：是否跟「存檔」撞名 (避免覆蓋老手存檔) 
+    // Check File Registration / 檢查存檔是否重複
     char filename[64];
-    sprintf(filename, "%s.dat", new_name); // 拼湊出檔名
+    sprintf(filename, "%s.dat", new_name); 
     
-    FILE *fp = fopen(filename, "r"); // 試著讀讀看
+    FILE *fp = fopen(filename, "r"); 
     if (fp != NULL) {
-        // 讀得到檔案，代表這個名字已經被註冊過 (雖然他現在不在線上)
         fclose(fp);
         char *err_msg = "Name already registered (File exists). Please choose another.\n";
         send_encrypted(sd, err_msg, strlen(err_msg), 0);
-        return; // 擋下來！保護老手資料
+        return; 
     }
-    // 3. 改名
+
     char old_name[MAX_NAME];
     strcpy(old_name, current_player->name);
     strcpy(current_player->name, new_name);
@@ -935,29 +926,26 @@ void handle_name(int sd, Player *current_player, char *buffer) {
     sprintf(msg, "You changed your name to %s.\n", new_name);
     send_encrypted(sd, msg, strlen(msg), 0);
 
-    // 4. 廣播告訴大家
-    sprintf(msg, "\n[通知] %s is now known as %s.\n", old_name, new_name);
+    // Broadcast Name Change / 廣播改名
+    sprintf(msg, "\n[Notification] %s is now known as %s.\n", old_name, new_name);
     broadcast_room(current_player, msg);
 }
 
+/**
+ * @brief Handle Exit Command / 處理離開指令
+ */
 void handle_exit(int sd, Player *p) {
-    // 1. 如果是正式玩家，就幫他存檔
     if (strncmp(p->name, "Guest", 5) != 0) {
-        // 直接呼叫既有的存檔功能 (它會幫你寫入檔案，並回傳 "Game saved")
         handle_save(sd, p); 
     } 
 
-    // 2. 發送道別訊息
     char msg[64];
     sprintf(msg, "Goodbye, %s!\n", p->name);
     send_encrypted(sd, msg, strlen(msg), 0);
-    
-    // (注意：這裡不需要 close(sd)，因為 Server 回去迴圈後，
-    //  若 Client 端收到 Goodbye 自行斷線，Server 會在 read() 讀到 0 時自動清理)
 }
 
 /**
-  * @brief 初始化地圖與載入 map.txt
+  * @brief Initialize Map / 初始化地圖
   */
 void init_map() {
     for (int i = 0; i < MAP_SIZE; i++) {
@@ -986,11 +974,14 @@ void init_map() {
     printf("Map initialized successfully!\n");
 }
 
+/**
+ * @brief Create a new player and send welcome message / 建立新玩家並發送歡迎訊息
+ */
 void create_player(int fd) {
     Player *p = (Player *)malloc(sizeof(Player));
     p->socket_fd = fd;
     
-    // 設定預設名稱
+    // default name : Guest / 設定預設名稱
     sprintf(p->name, "Guest%d", fd);
     
     p->x = 0;
@@ -1002,8 +993,8 @@ void create_player(int fd) {
     
     printf("Created player for socket %d\n", fd);
 
-    // ★★★ 新增這段：歡迎訊息與操作教學 ★★★
-    char welcome_msg[512]; // 開大一點以免裝不下
+    // Welcome Message / 歡迎訊息
+    char welcome_msg[512]; 
     sprintf(welcome_msg, 
         "\n"
         "========================================\n"
@@ -1026,6 +1017,9 @@ void create_player(int fd) {
     send_encrypted(fd, welcome_msg, strlen(welcome_msg), 0);
 }
 
+/**
+ * @brief Find player by socket fd / 依據 fd 尋找玩家
+ */
 Player *find_player_by_fd(int fd) {
     Player *current = player_list_head;
     while (current != NULL) {
