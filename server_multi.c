@@ -522,40 +522,51 @@ void handle_look(int sd, Player *current_player) {
  * @brief Handle Move Command / 處理移動指令
  */
 void handle_move(int sd, Player *p, const char *direction) {
-    int moved = 0;
+    int can_move = 0;
+    int new_x = p->x;
+    int new_y = p->y;
     char broadcast_msg[100];
+    char msg[64];
 
-    // Broadcast before moving / 移動前的廣播
-    sprintf(broadcast_msg, "\n[Notification] %s left going %s.\n", p->name, direction);
-    broadcast_room(p, broadcast_msg);
-
-    // Boundary Check / 邊界檢查
+    // 1. 先計算新座標與檢查邊界 / Pre-calculate new coordinates and check boundaries
     if (strcmp(direction, "North") == 0) {
-        if (p->y > 0) { p->y--; moved = 1; }
+        if (p->y > 0) { new_y--; can_move = 1; }
     } 
     else if (strcmp(direction, "South") == 0) {
-        if (p->y < MAP_SIZE - 1) { p->y++; moved = 1; }
+        if (p->y < MAP_SIZE - 1) { new_y++; can_move = 1; }
     }
     else if (strcmp(direction, "East") == 0) {
-        if (p->x < MAP_SIZE - 1) { p->x++; moved = 1; }
+        if (p->x < MAP_SIZE - 1) { new_x++; can_move = 1; }
     }
     else if (strcmp(direction, "West") == 0) {
-        if (p->x > 0) { p->x--; moved = 1; }
+        if (p->x > 0) { new_x--; can_move = 1; }
     }
 
-    // Response / 回覆訊息
-    if (moved) {
-        char msg[64];
+    // 2. 根據檢查結果執行動作 / Execute move if valid
+    if (can_move) {
+        // Notify users in the OLD room (Before updating coordinates)
+        sprintf(broadcast_msg, "\n[Notification] %s left the room.\n", p->name);
+        broadcast_room(p, broadcast_msg); 
+        // p->x and p->y are still the old values here
+
+        // Update player's actual position
+        p->x = new_x;
+        p->y = new_y;
+
+        // [Feedback] Send confirmation to the player
         sprintf(msg, "You moved %s.\n", direction);
         send_encrypted(sd, msg, strlen(msg), 0);
 
-        // Broadcast after moving / 移動後的廣播
+        // [Broadcast B] Notify users in the NEW room (After updating coordinates)
+        // p->x and p->y are now the new values.
         sprintf(broadcast_msg, "\n[Notification] %s entered the room.\n", p->name);
         broadcast_room(p, broadcast_msg);
 
-        // Auto Look / 自動查看新房間
+        // Automatically show the new room description
         handle_look(sd, p); 
+
     } else {
+        // Handle invalid move (Hit a wall)
         send_encrypted(sd, "You hit a wall!\n", 16, 0);
     }
 }
