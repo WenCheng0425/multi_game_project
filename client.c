@@ -167,6 +167,8 @@ int main(int argc, char *argv[]) {
     
     fd_set readfds;
 
+    // Main Event Loop (Non-blocking I/O)
+    // 主事件迴圈 (非阻塞 I/O)：Client 不會停下來等 Server，也不會停下來等鍵盤。
     while (1) {
         FD_ZERO(&readfds);
         FD_SET(0, &readfds);       // 0 代表標準輸入 (鍵盤) / 0 is Keyboard
@@ -188,7 +190,7 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            // [Demo] Print a label to indicate the following output is raw encrypted ciphertext.
+            // Security Verification: Print a label to indicate the following output is raw encrypted ciphertext.
             // 標示接下來的輸出為原始加密密文 (證明加密功能運作中)。
             printf("\n[RAW-ENCRYPTED]: "); 
             // Use fwrite to safely print the raw binary buffer. 

@@ -22,6 +22,8 @@
 #define XOR_KEY 'K'
 
 // --- Shared Structures / 共用結構 ---
+// Linked List Data Structures to Dynamically Manage Variable Number of Players and Items
+// 鏈結串列資料結構：用於動態管理不確定數量的玩家與物品。
 typedef struct Item {
     char name[MAX_NAME];   
     struct Item *next;     

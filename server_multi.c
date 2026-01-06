@@ -163,6 +163,8 @@ int main() {
         }
 
         // Wait for activity / 等待活動
+        // This allows the server to handle multiple clients in a single thread (Non-blocking).
+        // 這讓伺服器可以在「單一執行緒」內處理多個玩家，不會因為單一玩家卡住而當機。
         activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
 
         if ((activity < 0) && (errno != EINTR)) {
@@ -256,7 +258,7 @@ int main() {
                     close(sd);
                     client_socket[i] = 0;
                 } else {
-                    // Decrypt received command from ClientServer / 收到指令，先解密才能看懂
+                    // Decrypt Packet immediately after receiving / 收到指令，先解密才能看懂
                     xor_process(buffer, valread);
                     // Process received string / 處理接收到的字串
                     buffer[strcspn(buffer, "\n")] = 0;
@@ -297,7 +299,7 @@ int main() {
 /* ================================================================================== */
 
 /**
-  * @brief Initialize TCP Socket (IPv4/IPv6 Dual Stack)
+  * @brief Initialize TCP Socket (Support IPv4/IPv6 Dual Stack)
   * 初始化 TCP Socket (支援 IPv4/IPv6 雙堆疊)
   */
 int init_server_socket(int port) {
