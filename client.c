@@ -187,6 +187,18 @@ int main(int argc, char *argv[]) {
                 printf("Server disconnected.\n");
                 break;
             }
+
+            // [Demo] Print a label to indicate the following output is raw encrypted ciphertext.
+            // 標示接下來的輸出為原始加密密文 (證明加密功能運作中)。
+            printf("\n[RAW-ENCRYPTED]: "); 
+            // Use fwrite to safely print the raw binary buffer. 
+            // Unlike printf, fwrite handles null bytes and non-printable characters correctly.
+            // 使用 fwrite 安全地印出原始二進位緩衝區。
+            // 不同於 printf，fwrite 能正確處理加密數據中可能出現的 Null 字元與不可列印符號。
+            fwrite(buffer, 1, valread, stdout); 
+            //Print a newline to visually separate the ciphertext from the decrypted plain text below.
+            printf("\n"); 
+            
             // 解密 Server 傳來的內容 / Decrypt Content
             xor_process(buffer, valread);
 
